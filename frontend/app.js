@@ -255,11 +255,14 @@ function styleDeviceModal() {
   $("d-host-label").textContent = kind === "local" ? "控制台地址（本机一般 127.0.0.1）" : "主机";
   $("d-host").placeholder = kind === "local" ? "127.0.0.1" : "192.168.3.10";
   $("d-os-wrap").classList.toggle("hidden", kind === "local");
+  // 机器类型藏起来时名称独占一行会缺半截，让它铺满
+  $("d-name").closest(".field").classList.toggle("wide", kind === "local");
   $("d-cfg-wrap").classList.toggle("hidden", kind !== "local");
   $("d-cfg").disabled = !!editing;
   $("btn-dv-remove").classList.toggle("hidden", !editing);
   $("btn-dv-rescan").classList.toggle("hidden", kind !== "local");
   $("btn-dv-ok").textContent = editing ? "保存并测试" : "添加并测试";
+  renderPresets();
   $("dv-hint").textContent = kind === "local"
     ? "本机实例通常由「重新扫描本机」从运行中的 frpc 进程参数里自动识别；手动填用于 App 读不到进程的情况。凭据存放在 ~/.config/frp-client/app.toml（0600）。"
     : editing
@@ -271,6 +274,45 @@ function closeDeviceModal() {
   $("device-mask").classList.add("hidden");
   state.dev = { kind: "remote", editing: "" };
 }
+
+/* 地址 / 端口的常用值：内网前缀点一下接着敲主机号，已配过的设备也拿来当候选 */
+function presetChips(boxId, inputId, values) {
+  const seen = [];
+  values.forEach((v) => v && !seen.includes(v) && seen.push(v));
+  $(boxId).innerHTML = seen
+    .slice(0, 6)
+    .map((v) => `<button type="button" class="preset" data-target="${inputId}" data-value="${esc(v)}">${esc(v)}</button>`)
+    .join("");
+}
+
+function renderPresets() {
+  const { kind, editing } = state.dev;
+  const others = state.targets.list.filter((x) => x.id !== editing);
+  const hosts = (kind === "local" ? ["127.0.0.1"] : ["192.168.", "10.", "127.0.0.1"]).concat(others.map((x) => x.host));
+  const ports = ["7400", "7500"].concat(others.map((x) => String(x.port || "")));
+  presetChips("host-presets", "d-host", hosts);
+  presetChips("port-presets", "d-port", ports);
+  markPresets();
+}
+
+/* 当前值正好等于某个常用值时把它标出来，一眼看出填的是不是老地址 */
+function markPresets() {
+  document.querySelectorAll(".mask .preset").forEach((c) =>
+    c.classList.toggle("on", $(c.dataset.target).value === c.dataset.value)
+  );
+}
+
+document.addEventListener("click", (e) => {
+  const c = e.target.closest(".preset");
+  if (!c) return;
+  const input = $(c.dataset.target);
+  input.value = c.dataset.value;
+  input.focus();
+  markPresets();
+});
+["d-host", "d-port", "c-port", "c-web-addr", "c-web-port"].forEach((id) =>
+  $(id).addEventListener("input", markPresets)
+);
 
 async function submitDevice() {
   const { kind, editing } = state.dev;
@@ -630,20 +672,21 @@ function statusStrip(t, s) {
       : '<span class="badge stop">● 状态读取失败</span>',
     t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : "",
   ].join("");
-  const cell = (k, v) => (v ? `<div class="st-cell"><span class="st-k">${k}</span><span class="st-v">${esc(String(v))}</span></div>` : "");
+  const cell = (k, v, hot) =>
+    v ? `<div class="st-cell"><span class="st-k">${k}</span><span class="st-v${hot ? " hot" : ""}">${esc(String(v))}</span></div>` : "";
   const rp = (s && s.proxies) || [];
   const bad = rp.filter((p) => p.status !== "running");
   const stats = s && s.procStats;
   const live = !!s && s.apiReachable;
-  const tunnelNote = live
-    ? `${s.runningCount} / ${s.proxyCount} 运行中` + (bad.length ? ` · ${bad.length} 条异常` : "")
-    : "";
   return `<div class="st-badges">${badges}</div>
     <div class="st-cells">
-      ${cell("隧道", tunnelNote)}
+      ${live ? cell("隧道", `${s.runningCount} / ${s.proxyCount} 运行中`) : ""}
+      ${live && bad.length ? cell("异常", `${bad.length} 条`, true) : ""}
       ${cell("管理 API", s ? (live ? "可达" : "不可达") : "—")}
       ${cell("进程", s && s.pid ? `PID ${s.pid}` : t.kind === "local" && t.pid ? `PID ${t.pid}` : "")}
-      ${stats ? cell("占用", `${stats.rssMb}MB · CPU ${stats.cpuPct}% · 运行 ${stats.etime}`) : ""}
+      ${stats ? cell("内存", `${stats.rssMb}MB`) : ""}
+      ${stats ? cell("CPU", `${stats.cpuPct}%`) : ""}
+      ${stats ? cell("已运行", stats.etime) : ""}
       ${live ? cell("生效方式", state.storeMode ? "store · 改动实时生效" : "配置文件 · 保存后生效") : ""}
     </div>`;
 }
@@ -717,6 +760,7 @@ function srvFillFields(b) {
   $("c-web-port").value = b.webPort ?? "";
   $("c-web-user").value = b.webUser ?? "";
   $("c-web-pass").value = b.webPass ?? "";
+  markPresets();
 }
 
 async function openServerModal() {
@@ -725,6 +769,11 @@ async function openServerModal() {
   srvFillFields(state.cfg.basics || {});
   $("c-raw").value = state.srv.raw;
   const t = activeTarget();
+  // 常用端口和「App 现在是怎么连这台设备的」直接给成候选，省得来回抄
+  presetChips("c-port-presets", "c-port", ["7000"]);
+  presetChips("c-web-addr-presets", "c-web-addr", ["127.0.0.1", t ? t.host : ""]);
+  presetChips("c-web-port-presets", "c-web-port", ["7400", "7500", t ? String(t.port) : ""]);
+  markPresets();
   $("srv-title").textContent = `编辑设备配置 · ${t ? t.name : ""}`;
   styleSrvTabs();
   styleSrvFoot();

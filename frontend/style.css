@@ -317,18 +317,22 @@ body {
 }
 .drift .btn { margin-left: 8px; }
 /* tab 行下面这条：设备现在跑成什么样（只读，改东西去下面两个弹窗） */
-.ov-status {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
-  padding: 0 0 12px; border-bottom: 1px solid var(--border);
+.ov-status { display: flex; flex-direction: column; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.st-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.st-cells {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px 22px;
 }
-.st-badges { display: flex; gap: 6px; }
-.st-cells { display: flex; flex-wrap: wrap; gap: 6px 24px; }
-.st-cell { display: flex; align-items: baseline; gap: 7px; }
-.st-k { color: var(--muted); font-size: 11.5px; }
-.st-v { color: var(--text-strong); font-size: 12.5px; font-weight: 600; }
+.st-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.st-k { color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.st-v {
+  color: var(--text-strong); font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.st-v.hot { color: var(--danger); }
 .ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 10px 32px; padding-top: 14px; }
 .ov-sec { min-width: 0; }
-.ov-foot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ov-foot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); gap: 10px; }
 .ov-foot .hint { color: var(--faint); }
 .badge.ro { background: #eef1f6; color: var(--muted); }
 .badge.mgd { background: var(--ok-soft); color: var(--ok); }
@@ -399,6 +403,17 @@ body {
 }
 .pgrid .field.narrow { flex: none; }
 .pgrid .field.wide { grid-column: 1 / -1; }
+/* 输入框下面的一排常用值：点一下就填进上面的框，省去手敲内网地址和端口 */
+.presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; }
+.preset {
+  height: 20px; padding: 0 7px; border-radius: 6px;
+  border: 1px solid #e2e8f0; background: var(--bg-row);
+  color: var(--muted); font-size: 11px; line-height: 18px; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.preset:hover { border-color: var(--primary); color: var(--primary-deep); background: #fff; }
+.preset.on { border-color: var(--primary); color: var(--primary-deep); background: var(--primary-soft); }
+#device-mask .modal { width: 460px; }
 .modal .hint { margin-top: 10px; }
 
 /* ---------- toasts ---------- */
