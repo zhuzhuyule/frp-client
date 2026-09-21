@@ -187,7 +187,7 @@ body {
 .stat-value.bad { color: var(--danger); }
 
 .kv { display: flex; gap: 12px; padding: 4px 0; }
-.kv .k { width: 70px; color: var(--muted); font-size: 12px; }
+.kv .k { width: 100px; flex: none; color: var(--muted); font-size: 12px; }
 .kv .v { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- tunnels table ---------- */
@@ -314,25 +314,16 @@ body {
 .hint { font-size: 11px; color: var(--faint); }
 .hint.warn { color: var(--warn); margin-top: 8px; }
 
-.crow { display: flex; align-items: center; gap: 8px; padding: 0 8px; height: 36px; border-radius: 8px; background: var(--bg-row); margin-top: 6px; }
-.crow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.crow b { font-weight: 600; color: var(--text-strong); }
-.crow .type { font-weight: 600; font-size: 12px; }
-.type.tcp { color: var(--primary); } .type.http { color: var(--ok); } .type.udp { color: var(--purple); }
-.target-rows { margin-bottom: 6px; }
+.target-rows { margin-top: 6px; }
 
-/* ---------- 目标管理弹窗 ---------- */
-.sec-title {
-  margin-top: 16px; font-size: 12px; font-weight: 700; color: var(--text-strong);
-  display: flex; align-items: center; gap: 7px;
+/* ---------- 设置页：设备与连接 ---------- */
+/* 设备连接参数和该 frpc 配置里的 webServer 不一致时的提醒 */
+.drift {
+  margin-top: 10px; padding: 9px 12px; border-radius: 10px;
+  background: var(--warn-soft); border: 1px solid #f2ddc0;
+  color: #92610c; font-size: 12px; line-height: 1.7;
 }
-.sec-title::before {
-  content: ""; width: 4px; height: 12px; border-radius: 2px;
-  background: linear-gradient(180deg, #5b8ef7, var(--primary-deep));
-}
-.modal.xwide {
-  width: 660px; max-height: calc(100vh - 44px); overflow-y: auto;
-}
+.drift .btn { margin-left: 8px; }
 .subform {
   margin-top: 8px; padding: 10px 12px 12px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg-row);

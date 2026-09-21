@@ -318,7 +318,7 @@ async fn get_targets(state: State<'_, AppState>) -> Result<serde_json::Value, St
     for r in state.remotes.lock().unwrap().iter() {
         list.push(serde_json::json!({
             "kind": "remote", "id": r.name, "name": r.name, "host": r.host, "port": r.port,
-            "os": r.os, "managed": false, "pid": null, "needCreds": false, "configPath": "",
+            "user": r.user, "os": r.os, "managed": false, "pid": null, "needCreds": false, "configPath": "",
         }));
     }
     let (active_kind, active_id) = match &a {
@@ -559,23 +559,70 @@ async fn add_target(
     Ok(format!("已添加远端目标「{name}」"))
 }
 
+/// 更新一台已登记的远端设备（改名 / 换地址端口 / 轮换凭据）。
+/// 先测连通再落盘：填错了不该把设备留在打不开的状态。password 留空表示沿用原密码。
 #[tauri::command]
-async fn set_target_os(
+async fn update_target(
     state: State<'_, AppState>,
+    original: String,
     name: String,
-    os: String,
+    host: String,
+    port: String,
+    user: String,
+    password: String,
+    os: Option<String>,
 ) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("设备名称不能为空".into());
+    }
+    validate_host(&host).map_err(|e| format!("{e:#}"))?;
+    let port: u16 = port.trim().parse().map_err(|_| "端口必须是数字".to_string())?;
+    if user.trim().is_empty() {
+        return Err("webServer 用户名不能为空".into());
+    }
+    let os = os.unwrap_or_default();
     if !valid_os(&os) {
         return Err("机器类型不合法".into());
     }
-    let mut rs = state.remotes.lock().unwrap();
-    let r = rs
-        .iter_mut()
-        .find(|r| r.name == name)
-        .ok_or_else(|| format!("远端目标 {name} 不存在"))?;
-    r.os = os.clone();
-    save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已更新「{name}」的机器类型"))
+    let next = {
+        let rs = state.remotes.lock().unwrap();
+        let cur = rs
+            .iter()
+            .find(|r| r.name == original)
+            .ok_or_else(|| format!("远端设备 {original} 不存在"))?;
+        if rs.iter().any(|r| r.name == name && r.name != original) {
+            return Err(format!("已存在同名设备 {name}"));
+        }
+        RemoteTarget {
+            name: name.clone(),
+            host: host.trim().to_string(),
+            port,
+            user: user.trim().to_string(),
+            password: if password.is_empty() { cur.password.clone() } else { password },
+            os,
+        }
+    };
+    let ep = next.endpoint();
+    blocked(move || fetch_status(&ep))
+        .await
+        .map_err(|e| format!("连接测试失败，未保存：{e}"))?;
+    {
+        let mut rs = state.remotes.lock().unwrap();
+        let i = rs
+            .iter()
+            .position(|r| r.name == original)
+            .ok_or_else(|| format!("远端设备 {original} 不存在"))?;
+        rs[i] = next;
+        save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
+    }
+    if matches!(&*state.active.lock().unwrap(), Active::Remote(n) if n == &original) {
+        *state.active.lock().unwrap() = Active::Remote(name.clone());
+        if let Ok(src) = pull_staged(&state).await {
+            *state.staged.lock().unwrap() = src;
+        }
+    }
+    Ok(format!("已更新设备「{name}」"))
 }
 
 #[tauri::command]
@@ -993,7 +1040,7 @@ fn main() {
             remove_local,
             rescan_locals,
             add_target,
-            set_target_os,
+            update_target,
             remove_target,
             get_status,
             get_config,

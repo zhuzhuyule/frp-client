@@ -16,13 +16,15 @@ const state = {
   promptedCreds: false,
   editing: null,
   storeMode: false,
+  editRemote: "",
 };
 
 const PAGE_META = {
   tunnels: ["隧道管理", "查看隧道与本机进程 · 直接增删映射"],
-  config: ["配置预览", "只编辑服务端与控制台参数 · 本机重启生效，远端热加载"],
+  config: ["配置预览", "编辑这台 frpc 自己的配置 · 本机重启生效，远端热加载"],
   ai: ["AI 编排", "自然语言生成隧道配置（规划中）"],
   logs: ["日志", "查看 frpc 标准输出 / 标准错误日志"],
+  settings: ["设置", "设备与连接 · App 连哪台 frpc 的控制台"],
 };
 
 function typeCls(t) {
@@ -102,6 +104,7 @@ function showPage(p) {
   if (p === "tunnels") renderTunnels();
   if (p === "config") { renderConfig(); renderTargetTabs(); }
   if (p === "logs") loadLog();
+  if (p === "settings") renderDevices();
 }
 
 document.querySelectorAll(".nav-item").forEach((el) =>
@@ -109,6 +112,7 @@ document.querySelectorAll(".nav-item").forEach((el) =>
 );
 $("btn-new").addEventListener("click", openAddProxy);
 $("btn-goto-tunnels").addEventListener("click", () => showPage("tunnels"));
+$("btn-goto-settings").addEventListener("click", () => showPage("settings"));
 
 /* ---------- targets ---------- */
 async function loadTargets() {
@@ -122,9 +126,9 @@ async function loadTargets() {
       const miss = t.list.filter((x) => x.kind === "local" && x.needCreds);
       if (miss.length) {
         state.promptedCreds = true;
-        toast(`「${miss[0].name}」还缺 webServer 凭据，打开「管理目标」补全后即可读取状态`, "info");
+        toast(`「${miss[0].name}」还缺控制台凭据，到「设置」页补全后即可读取状态`, "info");
       }
-      if (!t.list.length) toast("未识别到任何目标，点「管理目标」扫描或手动添加", "info");
+      if (!t.list.length) toast("未识别到任何设备，到「设置」页扫描本机或添加远端", "info");
     }
   }
 }
@@ -198,7 +202,7 @@ function applyMode() {
   $("log-box").classList.toggle("hidden", remote);
 }
 
-/* ---------- 本机实例（管理目标弹窗） ---------- */
+/* ---------- 设置页：本机 frpc 实例 ---------- */
 function localBadge(x) {
   const parts = [
     x.id === state.targets.activeId ? '<span class="badge cur">当前</span>' : "",
@@ -234,7 +238,7 @@ function renderLocals() {
 
   box.querySelectorAll(".act-use").forEach((b) =>
     b.addEventListener("click", async () => {
-      if (await switchTarget("local", b.dataset.id)) closeTargets();
+      if (await switchTarget("local", b.dataset.id)) renderDevices();
     })
   );
   box.querySelectorAll(".act-edit").forEach((b) =>
@@ -313,7 +317,7 @@ async function removeLocal(id) {
     toast(note, "info");
     state.expandLocal = "";
     await afterTargetChange();
-    renderLocals();
+    renderDevices();
   }
 }
 
@@ -348,25 +352,136 @@ $("btn-rescan").addEventListener("click", async () => {
   if (okv(note)) {
     toast(note);
     await afterTargetChange();
-    renderLocals();
+    renderDevices();
   }
 });
 
-function openTargets() {
-  $("targets-mask").classList.remove("hidden");
-  renderLocals();
-  renderTargets();
+/* ---------- 设置页：连接参数与设备配置的漂移 ---------- */
+/* 设备记的是「App 用什么地址连」，配置里的 webServer 是「那台 frpc 自己绑在哪」。
+   改了配置里的端口 / 账号并重启后，设备侧不同步就连不上了。addr 不参与比较：
+   远端常常绑 0.0.0.0，而 App 用它的局域网地址连，两者本就不该相同。 */
+function driftItems() {
+  const t = activeTarget();
+  const b = (state.cfg || {}).basics;
+  if (!t || !b || !b.webPort) return null;
+  const items = [];
+  if (String(b.webPort) !== String(t.port)) {
+    items.push(`端口：配置里写的是 ${b.webPort}，App 连的是 ${t.port}`);
+  }
+  if (b.webUser && t.user && b.webUser !== t.user) {
+    items.push(`user：配置里写的是 ${b.webUser}，App 用的是 ${t.user}`);
+  }
+  return items.length ? items : null;
 }
-function closeTargets() {
-  $("targets-mask").classList.add("hidden");
+
+function driftHtml() {
+  const items = driftItems();
+  if (!items) return "";
+  const t = activeTarget();
+  return `${items.join("；")}。若已保存并重启过，可把设备「${esc(t.name)}」的连接参数改成配置里的值。`
+    + ` <button class="btn sm js-align">按配置更新设备连接</button>`;
 }
-$("btn-manage").addEventListener("click", openTargets);
-$("btn-close-targets").addEventListener("click", closeTargets);
-$("targets-mask").addEventListener("click", (e) => {
-  if (e.target === $("targets-mask")) closeTargets();
+
+function renderDrift() {
+  const html = driftHtml();
+  for (const id of ["conn-drift", "c-drift"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.classList.toggle("hidden", !html);
+    el.innerHTML = html;
+  }
+}
+
+async function alignDevice() {
+  const t = activeTarget();
+  const b = (state.cfg || {}).basics;
+  if (!t || !b) return;
+  const note = t.kind === "local"
+    ? await call("set_local_console", { id: t.id, addr: t.host, port: b.webPort, user: b.webUser || t.user, password: "" })
+    : await call("update_target", {
+        original: t.id, name: t.name, host: t.host, port: b.webPort,
+        user: b.webUser || t.user, password: "", os: t.os || "",
+      });
+  if (!okv(note)) return;
+  toast(note, String(note).includes("但") ? "info" : "ok");
+  await afterTargetChange();
+  renderDevices();
+}
+document.addEventListener("click", (e) => {
+  if (e.target.classList.contains("js-align")) alignDevice();
 });
 
-/* ---------- 远端目标 ---------- */
+function renderDevices() {
+  const t = activeTarget();
+  const b = (state.cfg || {}).basics || {};
+  $("s-cur").textContent = t
+    ? `${t.name}（${t.kind === "local" ? (t.managed ? "本机 · 托管" : "本机 · 只读") : "远端"}）`
+    : "—";
+  $("s-ep").textContent = t ? `${t.host}:${t.port}${t.user ? " · " + t.user : ""}` : "—";
+  $("s-cfg-web").textContent = b.webAddr
+    ? `${b.webAddr}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
+    : "未读取到配置";
+  renderLocals();
+  renderTargets();
+  renderDrift();
+}
+
+/* ---------- 设置页：远端设备 ---------- */
+function renderTargets() {
+  const remotes = state.targets.list.filter((x) => x.kind === "remote");
+  $("target-rows").innerHTML =
+    remotes
+      .map(
+        (x) => `<div class="lrow ${x.id === state.targets.activeId ? "active-row" : ""}">
+          <span class="l-main">
+            <b>${esc(x.name)}</b>
+            <i>${esc(x.host)}:${esc(String(x.port))}${x.user ? " · " + esc(x.user) : ""}</i>
+          </span>
+          ${x.id === state.targets.activeId ? '<span class="badge cur">当前</span>' : ""}
+          <button class="btn sm r-use" data-id="${esc(x.id)}" ${x.id === state.targets.activeId ? "disabled" : ""}>切换</button>
+          <button class="btn sm r-edit" data-id="${esc(x.id)}">编辑</button>
+          <button class="btn danger sm r-rm" data-id="${esc(x.id)}">移除</button>
+        </div>`
+      )
+      .join("") || `<div class="hint" style="padding:6px 2px">暂无远端设备 · 点右上角「＋ 添加设备」登记另一台机器上的 frpc 控制台</div>`;
+
+  $("target-rows").querySelectorAll(".r-use").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (await switchTarget("remote", b.dataset.id)) renderDevices();
+    })
+  );
+  $("target-rows").querySelectorAll(".r-edit").forEach((b) =>
+    b.addEventListener("click", () => openRemoteForm(b.dataset.id))
+  );
+  $("target-rows").querySelectorAll(".r-rm").forEach((b) =>
+    b.addEventListener("click", () => removeTarget(b.dataset.id))
+  );
+}
+
+function closeRemoteForm() {
+  state.editRemote = "";
+  ["t-name", "t-host", "t-port", "t-user", "t-pass"].forEach((i) => ($(i).value = ""));
+  $("t-os").value = "";
+  $("add-remote").classList.add("hidden");
+}
+
+function openRemoteForm(name) {
+  const x = name ? state.targets.list.find((y) => y.kind === "remote" && y.id === name) : null;
+  state.editRemote = x ? x.id : "";
+  $("t-name").value = x ? x.name : "";
+  $("t-host").value = x ? x.host : "";
+  $("t-port").value = x ? x.port : "";
+  $("t-user").value = x ? x.user || "" : "";
+  $("t-pass").value = "";
+  $("t-os").value = x ? x.os || "" : "";
+  $("btn-add-target").textContent = x ? "保存并测试" : "添加并测试";
+  $("remote-hint").textContent = x
+    ? "这里改的是 App 怎么连这台设备，不会动它自己的 frpc 配置；密码留空表示沿用原值。"
+    : "frpc API 不返回系统信息，机器类型仅作展示用图标；远端只读状态与热加载配置，不能控制进程。";
+  $("add-remote").classList.remove("hidden");
+  $("t-name").focus();
+}
+
 $("btn-add-target").addEventListener("click", async () => {
   const args = {
     name: $("t-name").value.trim(),
@@ -380,67 +495,33 @@ $("btn-add-target").addEventListener("click", async () => {
     toast("名称和主机必填", "err");
     return;
   }
-  const note = await call("add_target", args);
-  if (okv(note)) {
-    toast(note);
-    ["t-name", "t-host", "t-port", "t-user", "t-pass"].forEach((i) => ($(i).value = ""));
-    $("t-os").value = "";
-    $("add-remote").classList.add("hidden");
-    await afterTargetChange();
-  }
+  const editing = state.editRemote;
+  const note = editing
+    ? await call("update_target", { original: editing, ...args })
+    : await call("add_target", args);
+  if (!okv(note)) return;
+  toast(note);
+  closeRemoteForm();
+  await afterTargetChange();
+  renderDevices();
 });
 
 async function removeTarget(name) {
-  const ok = await showConfirm("移除远端目标？", `将从 App 中移除「${name}」及其保存的凭据，不会影响目标机上的 frpc。`, "移除");
+  const ok = await showConfirm("移除该设备？", `将从 App 中移除「${name}」及其保存的凭据，不会影响设备上的 frpc。`, "移除");
   if (!ok) return;
   const note = await call("remove_target", { name });
   if (okv(note)) {
     toast(note, "info");
     await afterTargetChange();
+    renderDevices();
   }
 }
 
-function renderTargets() {
-  const osOptions = (cur) =>
-    [["", "未知"], ["macos", "macOS"], ["windows", "Windows"], ["linux", "Linux"]]
-      .map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${l}</option>`)
-      .join("");
-  const remotes = state.targets.list.filter((x) => x.kind === "remote");
-  $("target-rows").innerHTML =
-    remotes
-      .map(
-        (x) => `<div class="crow">
-        <span style="width:150px"><b>${esc(x.name)}</b></span>
-        <span class="flex1">${esc(x.host)}:${x.port}</span>
-        <select class="os-pick" data-name="${esc(x.name)}" style="width:86px">${osOptions(x.os || "")}</select>
-        <button class="btn sm use" data-name="${esc(x.name)}" ${x.id === state.targets.activeId ? "disabled" : ""} style="width:60px">切换</button>
-        <button class="btn danger sm rm" data-name="${esc(x.name)}" style="width:60px">移除</button>
-      </div>`
-      )
-      .join("") || `<div class="hint" style="padding:6px 2px">暂无远端目标</div>`;
-  document.querySelectorAll("#target-rows .use").forEach((el) =>
-    el.addEventListener("click", async () => {
-      if (await switchTarget("remote", el.dataset.name)) closeTargets();
-    })
-  );
-  document.querySelectorAll("#target-rows .rm").forEach((el) =>
-    el.addEventListener("click", () => removeTarget(el.dataset.name))
-  );
-  document.querySelectorAll("#target-rows .os-pick").forEach((el) =>
-    el.addEventListener("change", async () => {
-      const note = await call("set_target_os", { name: el.dataset.name, os: el.value });
-      if (okv(note)) {
-        toast(note);
-        await loadTargets();
-        renderTargets();
-      }
-    })
-  );
-}
-$("btn-show-add-remote").addEventListener("click", () => $("add-remote").classList.toggle("hidden"));
-document.querySelectorAll(".js-hide-remote").forEach((b) =>
-  b.addEventListener("click", () => $("add-remote").classList.add("hidden"))
-);
+$("btn-show-add-remote").addEventListener("click", () => {
+  if ($("add-remote").classList.contains("hidden")) openRemoteForm("");
+  else closeRemoteForm();
+});
+document.querySelectorAll(".js-hide-remote").forEach((b) => b.addEventListener("click", closeRemoteForm));
 
 /* ---------- status rendering ---------- */
 async function refreshStatus() {
@@ -536,7 +617,7 @@ function renderTunnels() {
   $("tunnel-empty").classList.toggle("hidden", rows.length > 0);
   if (!hasTarget) {
     $("tunnel-empty").classList.remove("hidden");
-    $("tunnel-empty").innerHTML = "未识别到任何目标 · 点右上角「◫ 管理目标」扫描本机或添加远端";
+    $("tunnel-empty").innerHTML = "未识别到任何设备 · 到「设置」页扫描本机或添加远端";
   }
   if (s) renderOverview(s);
   const box = $("tunnel-rows");
@@ -698,13 +779,16 @@ function renderConfig() {
 function renderConfigMeta() {
   const s = state.status;
   const t = activeTarget();
+  const b = state.cfg.basics || {};
   $("i-target").textContent = t ? `${t.name}（${t.kind === "local" ? (t.managed ? "本机 · 托管" : "本机 · 只读") : "远端"}）` : "—";
   const storeN = state.cfg.proxies.filter((p) => p.source === "store").length;
   $("i-tc").textContent =
     `${state.cfg.proxies.length} 条` + (storeN ? `（${storeN} 条在 store，改动立即生效）` : "");
   $("i-web").textContent = s ? s.webUrl : t ? `${t.host}:${t.port}` : "—";
+  $("i-web-cfg").textContent = b.webAddr ? `${b.webAddr}:${b.webPort || ""}` : "—";
   $("i-cfg").textContent = (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
   $("i-saved").textContent = (s && s.savedAt) || "—";
+  renderDrift();
 }
 
 function basicsFromForm() {
@@ -872,7 +956,7 @@ $("btn-refresh").addEventListener("click", async () => {
   await refreshStatus();
   await loadConfig();
   applyMode();
-  renderLocals();
+  renderDevices();
   setInterval(() => {
     if (document.hidden || state.busy) return;
     refreshStatus();
