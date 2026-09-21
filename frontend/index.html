@@ -22,8 +22,6 @@
       <div class="nav-item" data-page="ai"><span class="nav-glyph">✦</span><span>AI 编排</span><i class="nav-dot"></i></div>
       <div class="nav-item" data-page="logs"><span class="nav-glyph">☰</span><span>日志</span><i class="nav-dot"></i></div>
     </nav>
-    <div class="side-label">管理目标</div>
-    <div id="target-list" class="target-list"></div>
     <div class="side-flex"></div>
     <div class="side-foot">
       <div id="side-status" class="side-status">● 检测中…</div>
@@ -40,40 +38,40 @@
       <div class="head-actions">
         <span class="ha ha-tunnels">
           <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" placeholder="搜索名称、本地或映射地址..." /></span>
+          <button id="btn-refresh" class="btn icon" title="刷新">⟳</button>
+          <button id="btn-save" class="btn">保存</button>
           <button id="btn-new" class="btn primary">+ 新建隧道</button>
-          <button id="btn-save" class="btn">保存 ✓</button>
-          <span id="save-badge" class="badge run">● 已保存</span>
         </span>
         <span class="ha ha-config">
           <button id="btn-reload" class="btn">重新加载</button>
           <button id="btn-apply" class="btn primary">保存并重启 frpc</button>
         </span>
         <span id="busy" class="busy hidden">操作…</span>
-        <button id="btn-refresh" class="btn ghost" title="刷新">⟳</button>
       </div>
     </header>
 
     <!-- ============ 隧道管理 ============ -->
     <section id="page-tunnels" class="page">
-      <div class="card table-card">
-        <div class="table-top">
-          <div class="chips">
-            <span id="chip-run" class="chip ok">● 运行中</span>
-            <span id="chip-cnt" class="chip">隧道 0 / 0</span>
-            <span id="chip-target" class="chip">目标：本机</span>
+      <div class="tt-wrap">
+        <div id="ttabs" class="ttabs"></div>
+        <div class="card table-card">
+          <div class="table-top">
+            <div class="chips">
+              <span id="chip-run" class="chip ok">● 运行中</span>
+              <span id="chip-cnt" class="chip">隧道 0 / 0</span>
+            </div>
           </div>
+          <div class="thead">
+            <span class="col-name">名称</span>
+            <span class="col-local">本地 IP:端口</span>
+            <span class="col-remote">映射地址:端口</span>
+            <span class="col-status">运行状态</span>
+            <span class="col-err">错误</span>
+            <span class="col-edit">操作</span>
+          </div>
+          <div id="tunnel-rows" class="rows"></div>
+          <div id="tunnel-empty" class="empty hidden">暂无隧道 · 管理 API 不可达或 frpc 未配置代理</div>
         </div>
-        <div class="thead">
-          <span class="col-name">名称</span>
-          <span class="col-type">连接类型</span>
-          <span class="col-local">本地 IP:端口</span>
-          <span class="col-remote">映射地址:端口</span>
-          <span class="col-status">运行状态</span>
-          <span class="col-err">错误</span>
-          <span class="col-edit">操作</span>
-        </div>
-        <div id="tunnel-rows" class="rows"></div>
-        <div id="tunnel-empty" class="empty hidden">暂无隧道 · 管理 API 不可达或 frpc 未配置代理</div>
       </div>
     </section>
 
@@ -135,27 +133,6 @@
           <div id="cfg-rows"></div>
         </div>
         <div class="card">
-          <div class="card-title">新增隧道</div>
-          <div class="row gap">
-            <label class="field"><span>名称</span><input id="n-name" placeholder="my-tunnel" /></label>
-            <label class="field narrow"><span>类型</span>
-              <select id="n-type"><option>tcp</option><option>http</option><option>udp</option></select>
-            </label>
-          </div>
-          <div class="row gap">
-            <label class="field"><span>localIP</span><input id="n-local-ip" value="127.0.0.1" /></label>
-            <label class="field narrow"><span>localPort</span><input id="n-local-port" placeholder="8080" /></label>
-          </div>
-          <div class="row gap">
-            <label class="field"><span>remotePort</span><input id="n-remote-port" placeholder="tcp/udp 必填" /></label>
-            <label class="field"><span>域名</span><input id="n-domain" placeholder="http 用，如 a.example.com" /></label>
-          </div>
-          <div class="row gap">
-            <button id="btn-add" class="btn">添加隧道</button>
-            <span class="hint">添加后需保存才写入配置</span>
-          </div>
-        </div>
-        <div class="card">
           <div class="card-title">管理目标</div>
           <div id="target-rows" class="target-rows"></div>
           <div class="row gap">
@@ -210,6 +187,26 @@
     <div class="modal-foot">
       <button id="confirm-cancel" class="btn sm">取消</button>
       <button id="confirm-ok" class="btn primary sm">确认</button>
+    </div>
+  </div>
+</div>
+<div id="proxy-mask" class="mask hidden">
+  <div class="modal wide">
+    <div class="modal-title">新建隧道</div>
+    <div class="pgrid">
+      <label class="field"><span>名称</span><input id="n-name" placeholder="my-tunnel" /></label>
+      <label class="field narrow"><span>类型</span>
+        <select id="n-type"><option>tcp</option><option>http</option><option>udp</option></select>
+      </label>
+      <label class="field"><span>localIP</span><input id="n-local-ip" value="127.0.0.1" /></label>
+      <label class="field"><span>localPort</span><input id="n-local-port" placeholder="8080" /></label>
+      <label class="field"><span>remotePort</span><input id="n-remote-port" placeholder="tcp/udp 必填" /></label>
+      <label class="field"><span>域名（http 用）</span><input id="n-domain" placeholder="a.example.com" /></label>
+    </div>
+    <div class="hint">加入暂存列表后仍需点「保存」写入当前目标</div>
+    <div class="modal-foot">
+      <button id="btn-add-cancel" class="btn sm">取消</button>
+      <button id="btn-add" class="btn primary sm">加入暂存</button>
     </div>
   </div>
 </div>

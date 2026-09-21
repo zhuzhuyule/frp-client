@@ -46,9 +46,10 @@ function toast(text, kind = "ok") {
 
 function setDirty(v) {
   state.dirty = v;
-  const b = $("save-badge");
-  b.textContent = v ? "● 未保存" : "● 已保存";
-  b.className = "badge " + (v ? "stop" : "run");
+  // 未保存 → 主按钮高亮提醒；已保存 → 次要按钮
+  const b = $("btn-save");
+  b.classList.toggle("primary", v);
+  b.title = v ? "有未保存的修改，点击写入当前目标" : "已是最新";
 }
 
 function setBusy(b) {
@@ -88,30 +89,27 @@ function showPage(p) {
 document.querySelectorAll(".nav-item").forEach((el) =>
   el.addEventListener("click", () => showPage(el.dataset.page))
 );
-$("btn-new").addEventListener("click", () => showPage("config"));
+$("btn-new").addEventListener("click", openAddProxy);
 
 /* ---------- targets ---------- */
 async function loadTargets() {
   const t = await call("get_targets");
   if (t) {
     state.targets = t;
-    renderTargetList();
+    renderTargetTabs();
   }
 }
 
-function renderTargetList() {
-  const { active, list } = state.targets;
-  $("target-list").innerHTML = list
-    .map((x) => {
-      const isActive = (x.kind === "local" && active === "local") || (x.kind === "remote" && active === "remote" && x.name === state.targets.activeName);
-      return `<div class="tg-item ${isActive ? "active" : ""}" data-kind="${x.kind}" data-name="${esc(x.name)}">
-        <span class="tg-dot"></span>
-        <span class="tg-name">${esc(x.name)}</span>
-        <span class="tg-host">${esc(x.host)}</span>
-      </div>`;
-    })
-    .join("");
-  document.querySelectorAll("#target-list .tg-item").forEach((el) =>
+function renderTargetTabs() {
+  const { active, activeName, list } = state.targets;
+  $("ttabs").innerHTML = list.map((x) => {
+    const isActive = (x.kind === "local" && active === "local") || (x.kind === "remote" && active === "remote" && x.name === activeName);
+    const dot = isActive ? (state.status && state.status.running ? "run" : "off") : "";
+    return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-name="${esc(x.name)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}">
+      <span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#ttabs .ttab").forEach((el) =>
     el.addEventListener("click", async () => {
       const { kind, name } = el.dataset;
       if ((kind === "local" && !isRemote()) || (kind === "remote" && state.targets.activeName === name)) return;
@@ -199,7 +197,7 @@ async function refreshStatus() {
     ? `● ${esc(s.targetName)} · frpc 运行中${s.mode === "local" ? " · PID " + s.pid : ""}`
     : `● ${esc(s.targetName)} · frpc 不可达`;
   side.classList.toggle("off", !s.running);
-  $("chip-target").textContent = `目标：${s.targetName}`;
+  renderTargetTabs();
   renderTunnels();
   if (state.page === "config") renderOverview(s);
 }
@@ -255,7 +253,6 @@ function renderTunnels() {
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
           <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err" : ""}">${p.err ? "存在错误" : esc(typeDesc(p.ptype))}</i></div>
         </div>
-        <span class="col-type"><span class="badge ${tc}">${esc(p.ptype.toUpperCase())}</span></span>
         <span class="col-local">${esc(p.localAddr || "—")}</span>
         <span class="col-remote">${esc(p.remoteAddr || "—")}</span>
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}">● ${running ? "运行中" : esc(p.status)}</span></span>
@@ -392,6 +389,17 @@ $("btn-reload").addEventListener("click", async () => {
   setDirty(false);
   toast("已重新加载当前目标的配置");
 });
+
+function openAddProxy() {
+  $("proxy-mask").classList.remove("hidden");
+  $("n-name").focus();
+}
+function closeAddProxy() {
+  $("proxy-mask").classList.add("hidden");
+}
+$("btn-add-cancel").addEventListener("click", closeAddProxy);
+$("proxy-mask").addEventListener("click", (e) => { if (e.target === $("proxy-mask")) closeAddProxy(); });
+
 $("btn-add").addEventListener("click", async () => {
   const np = {
     name: $("n-name").value.trim(),
@@ -406,6 +414,7 @@ $("btn-add").addEventListener("click", async () => {
   if (ok !== null) {
     await loadConfig();
     setDirty(true);
+    closeAddProxy();
     toast("已加入暂存列表，点保存生效");
     ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
   }
