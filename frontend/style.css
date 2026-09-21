@@ -140,6 +140,8 @@ body {
   color: var(--muted); font-size: 14px;
 }
 .btn.icon:hover { color: var(--primary); background: var(--primary-soft); }
+.btn.icon svg { display: block; }
+.btn.icon.danger:hover { color: var(--danger); background: var(--danger-soft); }
 .btn.square { width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
 
 /* ---------- pages ---------- */
@@ -255,7 +257,7 @@ body {
   height: 26px; border-radius: 7px; border: 1px solid #d8dee9;
   font-size: 11.5px; color: var(--text); background: #fff; outline: none;
 }
-.col-edit { flex: 0 0 48px; display: flex; justify-content: center; }
+.col-edit { flex: 0 0 68px; display: flex; gap: 2px; justify-content: center; }
 
 .trow {
   display: flex; align-items: center; gap: 10px;

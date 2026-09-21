@@ -1022,11 +1022,33 @@ pub fn validate_new(p: &NewProxy, existing: &[String]) -> Result<()> {
             }
         }
         "http" => {
-            p.domain.as_deref().context("http 隧道必须填域名")?;
+            if domain_list(p.domain.as_deref().unwrap_or("")).is_empty() {
+                bail!("http 隧道必须填域名");
+            }
         }
         other => bail!("不支持的隧道类型 {other}"),
     }
     Ok(())
+}
+
+/// 域名输入允许逗号 / 空格分隔多个
+pub fn domain_list(s: &str) -> Vec<String> {
+    s.split([',', ' '])
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
+}
+
+fn set_domains(tbl: &mut Table, domains: &[String]) {
+    if domains.is_empty() {
+        tbl.remove("customDomains");
+        return;
+    }
+    let mut arr = Array::new();
+    for d in domains {
+        arr.push(Value::from(d.clone()));
+    }
+    tbl["customDomains"] = Item::Value(Value::Array(arr));
 }
 
 pub fn add_proxy(src: &str, p: &NewProxy) -> Result<String> {
@@ -1040,12 +1062,38 @@ pub fn add_proxy(src: &str, p: &NewProxy) -> Result<String> {
     if let Some(rp) = p.remote_port {
         tbl["remotePort"] = value(rp);
     }
-    if let Some(d) = &p.domain {
-        let mut arr = Array::new();
-        arr.push(Value::from(d.clone()));
-        tbl["customDomains"] = Item::Value(Value::Array(arr));
-    }
+    set_domains(&mut tbl, &domain_list(p.domain.as_deref().unwrap_or("")));
     proxies_aot(&mut doc).push(tbl);
+    Ok(doc.to_string())
+}
+
+/// 原地改一条隧道：保留它在文件里的位置和周围注释
+pub fn update_proxy(src: &str, original: &str, p: &NewProxy) -> Result<String> {
+    let mut doc = src.parse::<DocumentMut>()?;
+    let idx = proxies_aot(&mut doc)
+        .iter()
+        .position(|t| {
+            t.get("name")
+                .and_then(|it| it.as_value())
+                .and_then(|v| v.as_str())
+                == Some(original)
+        })
+        .ok_or_else(|| anyhow!("未找到隧道 {original}"))?;
+    let tbl = proxies_aot(&mut doc)
+        .iter_mut()
+        .nth(idx)
+        .ok_or_else(|| anyhow!("未找到隧道 {original}"))?;
+    tbl["name"] = value(p.name.as_str());
+    tbl["type"] = value(p.ptype.as_str());
+    tbl["localIP"] = value(p.local_ip.as_str());
+    tbl["localPort"] = value(p.local_port);
+    match p.remote_port {
+        Some(rp) => tbl["remotePort"] = value(rp),
+        None => {
+            tbl.remove("remotePort");
+        }
+    }
+    set_domains(tbl, &domain_list(p.domain.as_deref().unwrap_or("")));
     Ok(doc.to_string())
 }
 
@@ -1148,6 +1196,29 @@ remotePort = 2222
         assert_eq!(ps[2].remote_port, "9090");
         assert!(validate_new(&np, &["x".into()]).is_ok());
         assert!(validate_new(&np, &["newtcp".into()]).is_err()); // 重名
+    }
+
+    #[test]
+    fn update_proxy_edits_in_place() {
+        let np = NewProxy {
+            name: "web2".into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 9092,
+            remote_port: Some(19092),
+            domain: None,
+        };
+        let out = update_proxy(SAMPLE, "web", &np).unwrap();
+        out.parse::<DocumentMut>().unwrap();
+        let ps = parse_proxies(&out).unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].name, "web2"); // 位置不变
+        assert_eq!(ps[0].ptype, "tcp");
+        assert_eq!(ps[0].remote_port, "19092");
+        assert!(ps[0].domains.is_empty()); // customDomains 被清掉
+        assert!(out.contains("# 顶部注释要保留"));
+        assert!(!out.contains("a.example.com"));
+        assert!(update_proxy(SAMPLE, "ghost", &np).is_err());
     }
 
     #[test]

@@ -677,6 +677,52 @@ async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<()
     Ok(())
 }
 
+/// 原地编辑一条隧道（改 name / 端口 / 域名），仍只动暂存区
+#[tauri::command]
+async fn update_proxy_cmd(
+    state: State<'_, AppState>,
+    original: String,
+    np: NewProxyDto,
+) -> Result<(), String> {
+    let local_port: i64 = np
+        .local_port
+        .parse()
+        .map_err(|_| "localPort 必须是数字".to_string())?;
+    let remote_port = if np.remote_port.trim().is_empty() {
+        None
+    } else {
+        Some(
+            np.remote_port
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "remotePort 必须是数字".to_string())?,
+        )
+    };
+    let domain = if np.domain.trim().is_empty() {
+        None
+    } else {
+        Some(np.domain.trim().to_string())
+    };
+    let p = NewProxy {
+        name: np.name.trim().to_string(),
+        ptype: np.ptype,
+        local_ip: np.local_ip,
+        local_port,
+        remote_port,
+        domain,
+    };
+    let mut staged = state.staged.lock().unwrap();
+    let existing: Vec<String> = parse_proxies(&staged)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.name)
+        .filter(|n| n != &original)
+        .collect();
+    backend::validate_new(&p, &existing).map_err(|e| format!("{e:#}"))?;
+    *staged = backend::update_proxy(&staged, &original, &p).map_err(|e| format!("{e:#}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn save_config_cmd(
     state: State<'_, AppState>,
@@ -844,6 +890,7 @@ fn main() {
             get_config,
             reload_config,
             add_proxy_cmd,
+            update_proxy_cmd,
             remove_proxy_cmd,
             save_config_cmd,
             proc_cmd,

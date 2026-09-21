@@ -14,6 +14,7 @@ const state = {
   showRaw: false,
   expandLocal: "",
   promptedCreds: false,
+  editing: null,
 };
 
 const PAGE_META = {
@@ -37,6 +38,11 @@ function activeTarget() {
   return state.targets.list.find((x) => x.id === state.targets.activeId) || null;
 }
 const OS_GLYPH = { macos: "", windows: "⊞", linux: "🐧" };
+
+const SVG = (d) =>
+  `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICO_EDIT = SVG('<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />');
+const ICO_DEL = SVG('<path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />');
 
 /* ---------- toast ---------- */
 function toast(text, kind = "ok") {
@@ -547,21 +553,14 @@ function renderTunnels() {
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}">● ${running ? "运行中" : esc(p.status)}</span></span>
         <span class="col-err${p.err ? " err-link" : ""}" ${p.err ? 'title="点击查看日志排查" ' : ""}data-err="${esc(p.err)}">${esc(p.err)}</span>
         <span class="col-edit">
-          <button class="btn icon edit" data-name="${esc(p.name)}" title="到配置页查看原文">✎</button>
-          <button class="btn icon danger del" data-name="${esc(p.name)}" title="删除该隧道">🗑</button>
+          <button class="btn icon edit" data-name="${esc(p.name)}" title="编辑该隧道">${ICO_EDIT}</button>
+          <button class="btn icon danger del" data-name="${esc(p.name)}" title="删除该隧道">${ICO_DEL}</button>
         </span>
       </div>`;
     })
     .join("");
   box.querySelectorAll(".edit").forEach((el) =>
-    el.addEventListener("click", () => {
-      state.showRaw = true;
-      $("raw-box").classList.remove("hidden");
-      $("btn-raw").textContent = "隐藏原始 TOML";
-      $("raw-box").textContent = `# 目标：${state.targets.activeName}\n` + state.cfg.raw;
-      showPage("config");
-      toast(`「${el.dataset.name}」的原文已在下方标出，逐条编辑仍在规划中`, "info");
-    })
+    el.addEventListener("click", () => openEditProxy(el.dataset.name))
   );
   box.querySelectorAll(".del").forEach((el) =>
     el.addEventListener("click", () => deleteProxy(el.dataset.name))
@@ -711,11 +710,40 @@ $("btn-reload").addEventListener("click", async () => {
 });
 
 function openAddProxy() {
+  state.editing = null;
+  $("proxy-title").textContent = "新建隧道";
+  $("btn-add").textContent = "加入暂存";
+  $("proxy-hint").textContent = "加入暂存列表后仍需点「保存并生效」写入当前目标";
+  ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
+  $("n-local-ip").value = "127.0.0.1";
+  $("n-type").value = "tcp";
   $("proxy-mask").classList.remove("hidden");
   $("n-name").focus();
 }
+
+function openEditProxy(name) {
+  const c = state.cfg.proxies.find((x) => x.name === name);
+  if (!c) {
+    toast("未在暂存配置中找到该隧道", "err");
+    return;
+  }
+  state.editing = name;
+  $("proxy-title").textContent = `编辑隧道 · ${name}`;
+  $("btn-add").textContent = "保存改动";
+  $("proxy-hint").textContent = "改动写入暂存后仍需点「保存并生效」落地到当前目标";
+  $("n-name").value = c.name;
+  $("n-type").value = ["tcp", "http", "udp"].includes(c.ptype) ? c.ptype : "tcp";
+  $("n-local-ip").value = c.localIp || "127.0.0.1";
+  $("n-local-port").value = c.localPort || "";
+  $("n-remote-port").value = c.remotePort || "";
+  $("n-domain").value = c.domains || "";
+  $("proxy-mask").classList.remove("hidden");
+  $("n-name").focus();
+}
+
 function closeAddProxy() {
   $("proxy-mask").classList.add("hidden");
+  state.editing = null;
 }
 $("btn-add-cancel").addEventListener("click", closeAddProxy);
 $("proxy-mask").addEventListener("click", (e) => {
@@ -735,14 +763,15 @@ $("btn-add").addEventListener("click", async () => {
     toast("名称不能为空", "err");
     return;
   }
-  const ok = await call("add_proxy_cmd", { np });
-  if (okv(ok)) {
-    await loadConfig();
-    setDirty(true);
-    closeAddProxy();
-    toast("已加入暂存列表，点「保存并生效」写入目标");
-    ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
-  }
+  const editing = state.editing;
+  const res = editing
+    ? await call("update_proxy_cmd", { original: editing, np })
+    : await call("add_proxy_cmd", { np });
+  if (!okv(res)) return;
+  await loadConfig();
+  setDirty(true);
+  closeAddProxy();
+  toast(editing ? `已改动「${np.name}」，点「保存并生效」写入目标` : "已加入暂存列表，点「保存并生效」写入目标");
 });
 $("btn-raw").addEventListener("click", () => {
   state.showRaw = !state.showRaw;

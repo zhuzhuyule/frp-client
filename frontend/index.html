@@ -168,7 +168,7 @@
 </div>
 <div id="proxy-mask" class="mask hidden">
   <div class="modal wide">
-    <div class="modal-title">新建隧道</div>
+    <div class="modal-title" id="proxy-title">新建隧道</div>
     <div class="pgrid">
       <label class="field"><span>名称</span><input id="n-name" placeholder="my-tunnel" /></label>
       <label class="field narrow"><span>类型</span>
@@ -177,9 +177,9 @@
       <label class="field"><span>localIP</span><input id="n-local-ip" value="127.0.0.1" /></label>
       <label class="field"><span>localPort</span><input id="n-local-port" placeholder="8080" /></label>
       <label class="field"><span>remotePort</span><input id="n-remote-port" placeholder="tcp/udp 必填" /></label>
-      <label class="field"><span>域名（http 用）</span><input id="n-domain" placeholder="a.example.com" /></label>
+      <label class="field"><span>域名（http 用，多个用逗号分隔）</span><input id="n-domain" placeholder="a.example.com" /></label>
     </div>
-    <div class="hint">加入暂存列表后仍需点「保存并生效」写入当前目标</div>
+    <div class="hint" id="proxy-hint">加入暂存列表后仍需点「保存并生效」写入当前目标</div>
     <div class="modal-foot">
       <button id="btn-add-cancel" class="btn sm">取消</button>
       <button id="btn-add" class="btn primary sm">加入暂存</button>
