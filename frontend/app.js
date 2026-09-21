@@ -253,8 +253,24 @@ function filteredProxies() {
     (p) =>
       p.name.toLowerCase().includes(q) ||
       p.localAddr.toLowerCase().includes(q) ||
-      p.remoteAddr.toLowerCase().includes(q)
+      p.remoteAddr.toLowerCase().includes(q) ||
+      (p.domains || "").toLowerCase().includes(q)
   );
+}
+
+/* 映射地址：配了 custom domain 就优先显示域名，其余已配置的映射逐条列出 */
+function remoteLines(p) {
+  const doms = (p.domains || "").split(",").map((x) => x.trim()).filter(Boolean);
+  const addr = (p.remoteAddr || "").trim();
+  const port = (addr.match(/:(\d+)$/) || [])[1] || String(p.remotePort || "").trim();
+  if (doms.length) {
+    const lines = [doms[0]];
+    if (port) lines.push(":" + port);
+    doms.slice(1).forEach((d) => lines.push(d));
+    return lines;
+  }
+  if (addr) return [addr];
+  return port ? [":" + port] : [];
 }
 
 function renderTunnels() {
@@ -272,13 +288,18 @@ function renderTunnels() {
     .map((p) => {
       const tc = typeCls(p.ptype);
       const running = p.status === "running";
+      const svc = p.svc;
+      const rlines = remoteLines(p);
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
           <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err" : ""}">${p.err ? "存在错误" : esc(typeDesc(p.ptype))}</i></div>
         </div>
-        <span class="col-local">${esc(p.localAddr || "—")}</span>
-        <span class="col-remote">${esc(p.remoteAddr || "—")}</span>
+        <div class="col-local t-two">
+          <span>${esc(p.localAddr || "—")}</span>
+          ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid} · CPU ${svc.cpuPct}%">${esc(svc.name)} · ${svc.rssMb}MB</i>` : ""}
+        </div>
+        <div class="col-remote t-two">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}">● ${running ? "运行中" : esc(p.status)}</span></span>
         <span class="col-err${p.err ? " err-link" : ""}" ${p.err ? 'title="点击查看日志排查" ' : ""}data-err="${esc(p.err)}">${esc(p.err)}</span>
         <span class="col-edit"><button class="btn icon edit" data-name="${esc(p.name)}" title="到配置页编辑">✎</button></span>

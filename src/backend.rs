@@ -341,6 +341,115 @@ pub fn proc_stats(pid: u32) -> Option<(f64, f64, String)> {
     Some((rss_mb, cpu, etime))
 }
 
+/// 本地端口背后那个服务的进程信息
+#[derive(Clone, Debug)]
+pub struct ServiceInfo {
+    pub pid: u32,
+    pub name: String,
+    pub path: String,
+    pub rss_mb: f64,
+    pub cpu_pct: f64,
+}
+
+/// 跳过前 n 个空白字段后取剩余整段（ps 的 comm 路径可能含空格）
+fn after_fields(line: &str, n: usize) -> Option<&str> {
+    let mut seen = 0usize;
+    let mut prev_ws = true;
+    for (i, ch) in line.char_indices() {
+        let ws = ch.is_whitespace();
+        if !ws && prev_ws {
+            seen += 1;
+            if seen > n {
+                return Some(line[i..].trim_end());
+            }
+        }
+        prev_ws = ws;
+    }
+    None
+}
+
+fn lsof_ports(args: &[&str]) -> Vec<(u16, u32)> {
+    let out = match std::process::Command::new("lsof").args(args).output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let mut hits = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines().skip(1) {
+        // COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME [(STATE)]
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 9 {
+            continue;
+        }
+        let Ok(pid) = cols[1].parse::<u32>() else { continue };
+        let Some(port) = cols[8].rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) else {
+            continue;
+        };
+        hits.push((port, pid));
+    }
+    hits
+}
+
+/// 本机「监听端口 -> 承载进程」索引（lsof + ps，零额外依赖）。
+/// 只能看到当前用户有权限探测的进程；远端目标没有对应能力。
+pub fn local_port_owners() -> std::collections::HashMap<u16, ServiceInfo> {
+    use std::collections::HashMap;
+    let mut port_pid: HashMap<u16, u32> = HashMap::new();
+    for pid in lsof_ports(&["-nP", "-iTCP", "-sTCP:LISTEN"])
+        .into_iter()
+        .chain(lsof_ports(&["-nP", "-iUDP"]))
+    {
+        port_pid.entry(pid.0).or_insert(pid.1);
+    }
+    if port_pid.is_empty() {
+        return HashMap::new();
+    }
+
+    let out = match std::process::Command::new("ps")
+        .args(["-axo", "pid=,rss=,pcpu=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return HashMap::new(),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut by_pid: HashMap<u32, ServiceInfo> = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        let mut it = line.split_whitespace();
+        let Some(pid) = it.next().and_then(|v| v.parse::<u32>().ok()) else {
+            continue;
+        };
+        if !port_pid.values().any(|&p| p == pid) {
+            continue;
+        }
+        let (Some(rss), Some(cpu)) = (
+            it.next().and_then(|v| v.parse::<f64>().ok()),
+            it.next().and_then(|v| v.parse::<f64>().ok()),
+        ) else {
+            continue;
+        };
+        let Some(path) = after_fields(line, 3) else {
+            continue;
+        };
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        by_pid.insert(
+            pid,
+            ServiceInfo {
+                pid,
+                name,
+                path: path.to_string(),
+                rss_mb: (rss / 1024.0 * 10.0).round() / 10.0,
+                cpu_pct: cpu,
+            },
+        );
+    }
+
+    port_pid
+        .into_iter()
+        .filter_map(|(port, pid)| by_pid.remove(&pid).map(|s| (port, s)))
+        .collect()
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new(cmd)
         .args(args)
@@ -915,5 +1024,31 @@ remotePort = 2222
         let src = read_config_file(&t).unwrap();
         assert!(src.contains("[[proxies]]"));
         assert!(tail(&t.log_path, 5000).is_ok());
+
+        let owners = local_port_owners();
+        for p in &ps {
+            let port = p.local_addr.rsplit(':').next().and_then(|v| v.parse::<u16>().ok());
+            let svc = port.and_then(|x| owners.get(&x));
+            println!(
+                "{} {} -> {}",
+                p.name,
+                p.local_addr,
+                match svc {
+                    Some(s) => format!("{} pid={} {}MB {}%", s.name, s.pid, s.rss_mb, s.cpu_pct),
+                    None => "（未找到监听进程）".into(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn local_port_owners_finds_own_listener() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let m = local_port_owners();
+        let s = m.get(&port).unwrap_or_else(|| panic!("{port} 未被 lsof 找到"));
+        assert_eq!(s.pid, std::process::id());
+        assert!(!s.name.is_empty());
     }
 }

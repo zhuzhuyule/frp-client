@@ -224,19 +224,25 @@ body {
   color: var(--muted); font-size: 12px;
 }
 .thead.small { font-size: 11px; padding: 2px 8px 6px; border-bottom: none; }
+.thead > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rows { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; overflow-y: auto; flex: 1; }
 
-.col-name { width: 260px; display: flex; align-items: center; gap: 10px; min-width: 0; }
-.col-local { width: 180px; }
-.col-remote { width: 200px; }
-.col-status { width: 104px; }
-.col-err { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); font-size: 12px; }
+.col-name { flex: 2 1 160px; min-width: 118px; display: flex; align-items: center; gap: 10px; }
+.col-local { flex: 1.5 1 130px; min-width: 96px; }
+.col-remote { flex: 1.7 1 140px; min-width: 96px; }
+.col-status { flex: 0 0 96px; }
+.t-two { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.t-two > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc { font-style: normal; font-size: 11px; color: var(--muted); }
+.r-main { font-size: 12.5px; color: var(--text); }
+.r-sub { font-size: 11px; color: var(--muted); }
+.col-err { flex: 1.3 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); font-size: 12px; }
 .col-err.err-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .crow select {
   height: 26px; border-radius: 7px; border: 1px solid #d8dee9;
   font-size: 11.5px; color: var(--text); background: #fff; outline: none;
 }
-.col-edit { width: 48px; display: flex; justify-content: center; }
+.col-edit { flex: 0 0 48px; display: flex; justify-content: center; }
 
 .trow {
   display: flex; align-items: center; gap: 10px;

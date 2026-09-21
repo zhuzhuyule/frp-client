@@ -3,10 +3,11 @@
 mod backend;
 
 use backend::{
-    apply_basics, detect_target, fetch_config, fetch_status, frpc_pid, load_remotes, parse_basics,
-    parse_proxies, proc_stats, put_config, read_config_file, remove_proxy, restart,
-    restore_config_from_backup, save_config, save_remotes, start, stop, tail, validate_host,
-    wait_ready, Basics as BackendBasics, Endpoint, NewProxy, RemoteTarget, Target,
+    apply_basics, detect_target, fetch_config, fetch_status, frpc_pid, load_remotes,
+    local_port_owners, parse_basics, parse_proxies, proc_stats, put_config, read_config_file,
+    remove_proxy, restart, restore_config_from_backup, save_config, save_remotes, start, stop,
+    tail, validate_host, wait_ready, Basics as BackendBasics, Endpoint, NewProxy, RemoteTarget,
+    Target,
 };
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -291,10 +292,11 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     let staged = state.staged.lock().unwrap().clone();
     let ep2 = ep.clone();
     let t2 = t.clone();
-    let (status, pid, saved_at, stats) = tauri::async_runtime::spawn_blocking(move || {
+    let (status, pid, saved_at, stats, owners) = tauri::async_runtime::spawn_blocking(move || {
         let list = fetch_status(&ep2);
         let pid = if is_local { frpc_pid() } else { None };
         let stats = pid.and_then(proc_stats);
+        let owners = if is_local { local_port_owners() } else { Default::default() };
         let saved = t2
             .as_ref()
             .and_then(|t| {
@@ -311,19 +313,37 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                     .map(|s| s.trim().to_string())
             })
             .unwrap_or_default();
-        (list, pid, saved, stats)
+        (list, pid, saved, stats, owners)
     })
     .await
     .map_err(|e| e.to_string())?;
 
+    let cfgs: std::collections::HashMap<String, backend::ProxyCfg> = parse_proxies(&staged)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.name.clone(), c))
+        .collect();
     let mut proxies = Vec::new();
     let mut api_reachable = false;
     if let Ok(list) = status {
         api_reachable = true;
         for p in list {
+            let svc = p
+                .local_addr
+                .rsplit(':')
+                .next()
+                .and_then(|v| v.parse::<u16>().ok())
+                .and_then(|port| owners.get(&port));
+            let cfg = cfgs.get(&p.name);
             proxies.push(serde_json::json!({
                 "name": p.name, "ptype": p.ptype, "status": p.status,
                 "err": p.err, "localAddr": p.local_addr, "remoteAddr": p.remote_addr,
+                "domains": cfg.map(|c| c.domains.clone()).unwrap_or_default(),
+                "remotePort": cfg.map(|c| c.remote_port.clone()).unwrap_or_default(),
+                "svc": svc.map(|s| serde_json::json!({
+                    "pid": s.pid, "name": s.name, "path": s.path,
+                    "rssMb": s.rss_mb, "cpuPct": s.cpu_pct,
+                })),
             }));
         }
     }
