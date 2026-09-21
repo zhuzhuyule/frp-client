@@ -95,9 +95,30 @@ body {
 .nav-live.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .18); }
 
 .side-flex { flex: 1; }
+/* 本机用量环：只有本机才有的信息，放在分割线上方（side-foot 的 border-top 就是那条线） */
+.side-usage { display: flex; flex-direction: column; gap: 10px; padding: 6px 12px 12px; }
+.side-usage:empty { display: none; }
+.gauge { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gauge svg { flex: 0 0 auto; overflow: visible; }
+.ring-bg { fill: none; stroke: rgba(255, 255, 255, .13); stroke-width: 4; }
+.ring-fg {
+  fill: none; stroke-width: 4; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 16px 16px;
+  transition: stroke-dashoffset .35s ease, stroke .2s ease;
+}
+.ring-t {
+  font-size: 9.5px; font-weight: 700; text-anchor: middle; dominant-baseline: central;
+  fill: #d7e0ef; font-variant-numeric: tabular-nums;
+}
+.gauge.mid .ring-fg { stroke: #6ba0f7; }
+.gauge.warn .ring-fg { stroke: #fbbf24; } .gauge.warn .ring-t { fill: #fbbf24; }
+.gauge.bad .ring-fg { stroke: #f87171; } .gauge.bad .ring-t { fill: #f87171; }
+.gauge-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.gauge-k { font-size: 11px; color: var(--side-faint); }
+.gauge-v { font-size: 11.5px; color: #c3cede; font-weight: 600; font-variant-numeric: tabular-nums; }
 .side-foot { padding: 10px 6px 2px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
-.side-status { display: flex; align-items: flex-start; gap: 8px; padding-top: 8px; font-size: 11px; }
-.ss-dot { flex: none; width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: #5b6a85; }
+.side-status { display: flex; align-items: center; gap: 8px; padding-top: 8px; font-size: 11px; }
+.ss-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #5b6a85; }
 .ss-dot.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .16); }
 .ss-dot.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .16); }
 .ss-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
@@ -111,25 +132,26 @@ body {
 .sm-k { color: var(--side-faint); }
 .sm-v { color: #d7e0ef; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sm-v.warn { color: #fbbf24; }
-.sm-note { color: var(--side-faint); line-height: 1.45; }
-.sm-note.warn { color: #fbbf24; }
 .side-metrics .btn.ghost { color: #9fb0cc; }
 .side-metrics .btn.ghost:hover:not(:disabled) { background: var(--side-hover); color: #dfe8f6; }
 
 /* ---------- content ---------- */
 .content { flex: 1; display: flex; flex-direction: column; padding: 22px 26px; min-width: 0; }
 
-.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-#page-title { font-size: 20px; font-weight: 700; color: var(--text-strong); }
-#page-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.ha { display: flex; align-items: center; gap: 10px; }
+/* 窄屏（App 最小宽度附近）宁可让按钮整组换行，也不让标题被挤成一个字一行 */
+.page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-bottom: 16px; }
+.head-titles { flex: 1 1 auto; min-width: 150px; }
+#page-title { font-size: 20px; font-weight: 700; color: var(--text-strong); white-space: nowrap; }
+#page-sub { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 16px; }
+.head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ha { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .busy { color: var(--muted); font-size: 12px; }
 
-.search-wrap { position: relative; display: inline-flex; align-items: center; }
+.search-wrap { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 110px; }
 .search-ico { position: absolute; left: 9px; color: var(--muted); font-size: 17px; line-height: 1; pointer-events: none; }
 .search {
-  width: 250px; height: 34px; border-radius: 9px;
+  /* 宽度写在 input 上：写成 100% 时百分比在固有尺寸里算不出来，会退回 input 默认的 20 字符宽 */
+  width: 250px; min-width: 110px; height: 34px; border-radius: 9px;
   border: 1px solid #d8dee9; background: #fff; padding: 0 12px 0 30px;
   font-size: 13px; color: var(--text-strong); outline: none;
   transition: border-color .15s, box-shadow .15s;
@@ -240,7 +262,9 @@ body {
 .tt-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ttabs {
   display: flex; align-items: flex-end; gap: 5px;
-  border-bottom: 1px solid #dfe5ef;
+  /* 分隔线用内阴影而不是 border-bottom：横向滚动的容器会把负 margin 伸出去的那一像素裁掉，
+     激活页签就盖不住线，页签和面板之间会留一条横线 */
+  box-shadow: inset 0 -1px 0 #dfe5ef;
   position: relative; z-index: 1;
   /* 设备登记多了不让页签被压扁，改成横向滚动 */
   overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
@@ -251,8 +275,9 @@ body {
 .ttab {
   flex: none;
   display: inline-flex; align-items: center; gap: 8px;
-  max-width: 220px; height: 33px; padding: 0 14px; margin-bottom: -1px;
-  border: 1px solid transparent; border-radius: 10px 10px 0 0;
+  max-width: 220px; height: 33px; padding: 0 14px;
+  border: 1px solid transparent; border-bottom-color: #dfe5ef;
+  border-radius: 10px 10px 0 0;
   background: transparent; color: var(--muted); font-size: 12.5px;
   cursor: pointer; white-space: nowrap; user-select: none;
   transition: background .15s, color .15s;
@@ -384,7 +409,7 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .st-v.hot { color: var(--danger); }
-/* 300px 下限是为了在 App 最小宽度（900）时仍然左右并排，而不是上下堆 */
+/* 两栏并排要 ~640px 的卡片宽度，窗口再窄就自动上下堆（窄栏里逐行对齐没意义） */
 .ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding-top: 14px; }
 /* 两个区域各自成框，行高固定，所以"控制台↔frps 服务端""账号↔控制台绑定"能逐行对齐 */
 .ov-sec {

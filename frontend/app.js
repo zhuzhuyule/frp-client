@@ -445,6 +445,8 @@ function showSkeletons() {
     $(id).innerHTML = skel("150px");
   }
   $("ov-foot-note").textContent = "";
+  // 上一台设备的用量环不留在屏上
+  renderSideUsage(null);
 }
 /* 骨架屏期间屏上挂的还是上一台设备的数据，别让人拿它去写当前目标 */
 function loadingGuard() {
@@ -453,63 +455,65 @@ function loadingGuard() {
   return true;
 }
 
-/* 状态点：控制台连得上给绿点，连不上给红点（侧边栏导航项和底部状态行共用同一判断） */
+/* 状态点：控制台连得上给绿点，连不上给红点（侧边栏导航项和底部状态行共用同一判断）
+   sub 只放本机 frpc 的运行时长；其它情况留空，侧栏不重复页签上已经有的信息 */
 function renderSideStatus(name, sub, up) {
   const el = $("side-status");
   el.innerHTML = `<i class="ss-dot${up ? " on" : " off"}"></i>`
-    + `<div class="ss-txt"><span class="ss-name">${esc(name)}</span><span class="ss-sub">${esc(sub)}</span></div>`;
+    + `<div class="ss-txt"><span class="ss-name">${esc(name)}</span>`
+    + (sub ? `<span class="ss-sub">${esc(sub)}</span>` : "") + `</div>`;
   document.querySelectorAll(".nav-live").forEach((d) => {
     d.classList.toggle("on", !!up);
     d.classList.toggle("off", !up);
   });
 }
 
-/* ---------- 侧边栏底部：本机 frpc 的运行状态、版本与用量 ---------- */
+/* ---------- 侧边栏分割线上方：本机 frpc 的 CPU / 内存占用环 ---------- */
+function ring(pct, label, detail, tip) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  const tone = p >= 90 ? "bad" : p >= 80 ? "warn" : "mid";
+  const r = 13, c = 2 * Math.PI * r;
+  const n = p >= 10 ? Math.round(p) : p >= 1 ? Math.round(p * 10) / 10 : Math.round(p * 100) / 100;
+  return `<div class="gauge ${tone}" title="${esc(tip)}">
+    <svg width="34" height="34" viewBox="0 0 32 32" aria-hidden="true">
+      <circle class="ring-bg" cx="16" cy="16" r="${r}" />
+      <circle class="ring-fg" cx="16" cy="16" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - p / 100)).toFixed(1)}" />
+      <text class="ring-t" x="16" y="16">${n}</text>
+    </svg>
+    <div class="gauge-txt"><span class="gauge-k">${esc(label)}</span><span class="gauge-v">${esc(detail)}</span></div>
+  </div>`;
+}
+
+function renderSideUsage(s) {
+  const box = $("side-usage");
+  const st = s && s.mode === "local" ? s.procStats : null;
+  box.innerHTML = st
+    ? ring(st.cpuPct, "CPU 占用", `${st.cpuPct}%`, "frpc 进程的 CPU 占用，100% = 跑满一个核心")
+      + ring(st.memPct, "内存占用", `${st.rssMb} MB`, `frpc 常驻内存 ${st.rssMb}MB，占整机内存 ${st.memPct}%`)
+    : "";
+}
+
+/* ---------- 侧边栏底部：本机 frpc 的版本 + 检查更新 ---------- */
 /* frpc 的 webServer 没有任何版本端点（实测只有 status/config/reload/stop/store），
-   所以版本只能问本机二进制；远端那一侧就地说明读不到，不做手填、不加新通道。 */
+   所以版本只能问本机二进制；远端读不到就整行不显示，不做手填、不加新通道。 */
 function renderSideMetrics(s) {
   const box = $("side-metrics");
-  if (!s) {
+  const st = s && s.mode === "local" ? s.procStats : null;
+  const ver = st && st.binVersion;
+  if (!ver) {
     box.innerHTML = "";
     return;
   }
-  const st = s.procStats;
-  const local = s.mode === "local";
-  const bits = [];
-  if (local) {
-    const ver = st && st.binVersion;
-    const L = state.latest;
-    const updatable = !!(L && ver && !versionAtLeast(ver, L.version));
-    const tip = !L
-      ? "联网查 GitHub 上的最新版"
-      : updatable
-        ? `GitHub 最新 ${esc(L.version)} · ${esc(L.at)} 检查过`
-        : `${esc(L.at)} 检查过，已是最新`;
-    bits.push(
-      `<div class="sm-ver"><span class="sm-k">frpc</span>`
-        + `<span class="sm-v${updatable ? " warn" : ""}">${ver ? esc(ver) : "版本未知"}</span>`
-        + (ver ? `<button id="btn-update" class="btn xs ghost" title="${tip}">检查更新</button>` : "")
-        + `</div>`
-    );
-    // 只有「有新版可升」「二进制换过等重启」两条值得单独占一行，其余收进悬浮说明
-    if (st && st.upgraded) {
-      bits.push(`<div class="sm-note warn">磁盘上的二进制已更新，重启后才生效</div>`);
-    }
-    if (updatable) {
-      bits.push(`<div class="sm-note warn">可更新到 ${esc(L.version)} · ${esc(L.at)}</div>`);
-    } else if (L && !ver) {
-      bits.push(`<div class="sm-note">GitHub 最新 ${esc(L.version)} · ${esc(L.at)}</div>`);
-    }
-    if (st) {
-      bits.push(
-        `<div class="sm-note" title="内存占整机 ${esc(String(st.memPct))}%；CPU 100% = 跑满一个核心">`
-          + `内存 ${esc(String(st.rssMb))}MB · CPU ${esc(String(st.cpuPct))}%</div>`
-      );
-    }
-  } else if (s.running) {
-    bits.push(`<div class="sm-note">远端版本读不到：它的控制台没有版本接口</div>`);
-  }
-  box.innerHTML = bits.join("");
+  const L = state.latest;
+  const updatable = !!(L && !versionAtLeast(ver, L.version));
+  let tip = !L ? "联网查 GitHub 上的最新版"
+    : updatable ? `可更新到 ${L.version} · ${L.at} 检查过`
+    : `${L.at} 检查过，已是最新`;
+  if (st.upgraded) tip = "磁盘上的二进制已更新，重启 frpc 后才生效";
+  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="sm-k">frpc</span>`
+    + `<span class="sm-v${updatable || st.upgraded ? " warn" : ""}">${esc(ver)}</span>`
+    + `<button id="btn-update" class="btn xs ghost" title="${esc(tip)}">检查更新</button>`
+    + `</div>`;
   const btn = $("btn-update");
   if (btn) btn.addEventListener("click", checkUpdate);
 }
@@ -545,9 +549,10 @@ async function refreshStatus() {
   } catch (e) {
     state.status = null;
     state.loading = false;
-    renderSideStatus("未识别到目标", "控制台没答话", false);
+    renderSideStatus("未识别到目标", "", false);
     $("tunnel-rows").innerHTML = "";
     renderSideMetrics(null);
+    renderSideUsage(null);
     renderTargetTabs();
     renderConfigOverview();
     toast(`状态获取失败：${e}`, "err");
@@ -556,13 +561,11 @@ async function refreshStatus() {
   const s = state.status;
   state.loading = false;
   const st = s.procStats;
-  const sub = !s.running
-    ? "frpc 不可达"
-    : s.mode === "local" && st && st.etime
-      ? `frpc 运行中 · ${fmtEtime(st.etime)}`
-      : "frpc 运行中";
+  // 已连上的本机只报运行时长；其它设备页签上已经有名字，这里不再重复一行字
+  const sub = s.mode === "local" && s.running && st && st.etime ? fmtEtime(st.etime) : "";
   renderSideStatus(s.targetName, sub, s.apiReachable || s.running);
   renderSideMetrics(s);
+  renderSideUsage(s);
   renderTargetTabs();
   renderTunnels();
   renderOverview(s);
