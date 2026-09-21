@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FRP Client</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-tile">F</div>
+      <div class="brand-text">
+        <div class="brand-name">FRP Client</div>
+        <div class="brand-sub">轻量 · 高效 · 稳定</div>
+      </div>
+    </div>
+    <nav id="nav">
+      <div class="nav-item" data-page="tunnels"><span class="nav-glyph">⇄</span><span>隧道管理</span><i class="nav-dot"></i></div>
+      <div class="nav-item" data-page="config"><span class="nav-glyph">⚙</span><span>配置预览</span><i class="nav-dot"></i></div>
+      <div class="nav-item" data-page="ai"><span class="nav-glyph">✦</span><span>AI 编排</span><i class="nav-dot"></i></div>
+      <div class="nav-item" data-page="logs"><span class="nav-glyph">☰</span><span>日志</span><i class="nav-dot"></i></div>
+    </nav>
+    <div class="side-label">管理目标</div>
+    <div id="target-list" class="target-list"></div>
+    <div class="side-flex"></div>
+    <div class="side-foot">
+      <div id="side-status" class="side-status">● 检测中…</div>
+      <div class="side-motto">FRP Client · 让本地服务更容易被访问</div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="page-head">
+      <div class="head-titles">
+        <h1 id="page-title">隧道管理</h1>
+        <p id="page-sub">管理本地服务映射并生成客户端配置</p>
+      </div>
+      <div class="head-actions">
+        <span class="ha ha-tunnels">
+          <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" placeholder="搜索名称、本地或映射地址..." /></span>
+          <button id="btn-new" class="btn primary">+ 新建隧道</button>
+          <button id="btn-save" class="btn">保存 ✓</button>
+          <span id="save-badge" class="badge run">● 已保存</span>
+        </span>
+        <span class="ha ha-config">
+          <button id="btn-reload" class="btn">重新加载</button>
+          <button id="btn-apply" class="btn primary">保存并重启 frpc</button>
+        </span>
+        <span id="busy" class="busy hidden">操作…</span>
+        <button id="btn-refresh" class="btn ghost" title="刷新">⟳</button>
+      </div>
+    </header>
+
+    <!-- ============ 隧道管理 ============ -->
+    <section id="page-tunnels" class="page">
+      <div class="card table-card">
+        <div class="table-top">
+          <div class="chips">
+            <span id="chip-run" class="chip ok">● 运行中</span>
+            <span id="chip-cnt" class="chip">隧道 0 / 0</span>
+            <span id="chip-target" class="chip">目标：本机</span>
+          </div>
+        </div>
+        <div class="thead">
+          <span class="col-name">名称</span>
+          <span class="col-type">连接类型</span>
+          <span class="col-local">本地 IP:端口</span>
+          <span class="col-remote">映射地址:端口</span>
+          <span class="col-status">运行状态</span>
+          <span class="col-err">错误</span>
+          <span class="col-edit">操作</span>
+        </div>
+        <div id="tunnel-rows" class="rows"></div>
+        <div id="tunnel-empty" class="empty hidden">暂无隧道 · 管理 API 不可达或 frpc 未配置代理</div>
+      </div>
+    </section>
+
+    <!-- ============ 配置预览 ============ -->
+    <section id="page-config" class="page scroll">
+      <div class="grid">
+        <div class="card" id="card-proc">
+          <div class="card-title">frpc 进程与连接</div>
+          <div class="stat-row">
+            <div class="stat-card"><div class="stat-label">运行状态</div><div id="st-run" class="stat-value">—</div></div>
+            <div class="stat-card"><div class="stat-label">进程 PID</div><div id="st-pid" class="stat-value">—</div></div>
+            <div class="stat-card"><div class="stat-label">隧道</div><div id="st-cnt" class="stat-value">—</div></div>
+            <div class="stat-card"><div class="stat-label">管理 API</div><div id="st-api" class="stat-value">—</div></div>
+          </div>
+          <div class="kv"><span class="k">服务端</span><span id="i-server" class="v"></span></div>
+          <div class="kv"><span class="k">控制台</span><span id="i-web" class="v"></span></div>
+          <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
+          <div class="row gap" id="proc-btns" style="margin-top:10px">
+            <button id="btn-start" class="btn primary sm">启动</button>
+            <button id="btn-restart" class="btn sm">重启</button>
+            <button id="btn-stop" class="btn danger sm">停止</button>
+          </div>
+          <div class="hint remote-only hidden">远端目标不支持进程控制，请在目标机上操作 frpc。</div>
+        </div>
+        <div class="card">
+          <div class="card-title">服务端 / 认证</div>
+          <div class="row gap">
+            <label class="field"><span>serverAddr</span><input id="c-addr" /></label>
+            <label class="field narrow"><span>serverPort</span><input id="c-port" /></label>
+          </div>
+          <div class="row gap">
+            <label class="field wide"><span>auth.token</span><input id="c-token" /></label>
+          </div>
+          <div class="card-title" style="margin-top:14px">本地控制台 webServer</div>
+          <div class="row gap">
+            <label class="field"><span>addr</span><input id="c-web-addr" /></label>
+            <label class="field narrow"><span>port</span><input id="c-web-port" /></label>
+          </div>
+          <div class="row gap">
+            <label class="field"><span>user</span><input id="c-web-user" /></label>
+            <label class="field"><span>password</span><input id="c-web-pass" /></label>
+          </div>
+          <div class="hint warn">webServer 绑非回环地址会把控制台暴露到网络（有密码保护），请确认是有意为之</div>
+        </div>
+        <div class="card">
+          <div class="card-title">隧道（<span id="cfg-cnt">0</span> 条）</div>
+          <div class="thead small">
+            <span style="width:150px">名称</span>
+            <span style="width:56px">类型</span>
+            <span style="width:150px">本地 IP:端口</span>
+            <span style="width:86px">远程端口</span>
+            <span class="flex1">域名</span>
+            <span style="width:60px"></span>
+          </div>
+          <div id="cfg-rows"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">新增隧道</div>
+          <div class="row gap">
+            <label class="field"><span>名称</span><input id="n-name" placeholder="my-tunnel" /></label>
+            <label class="field narrow"><span>类型</span>
+              <select id="n-type"><option>tcp</option><option>http</option><option>udp</option></select>
+            </label>
+          </div>
+          <div class="row gap">
+            <label class="field"><span>localIP</span><input id="n-local-ip" value="127.0.0.1" /></label>
+            <label class="field narrow"><span>localPort</span><input id="n-local-port" placeholder="8080" /></label>
+          </div>
+          <div class="row gap">
+            <label class="field"><span>remotePort</span><input id="n-remote-port" placeholder="tcp/udp 必填" /></label>
+            <label class="field"><span>域名</span><input id="n-domain" placeholder="http 用，如 a.example.com" /></label>
+          </div>
+          <div class="row gap">
+            <button id="btn-add" class="btn">添加隧道</button>
+            <span class="hint">添加后需保存才写入配置</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">管理目标</div>
+          <div id="target-rows" class="target-rows"></div>
+          <div class="row gap">
+            <label class="field"><span>名称</span><input id="t-name" placeholder="Mac Mini" /></label>
+            <label class="field"><span>主机</span><input id="t-host" placeholder="192.168.3.10" /></label>
+            <label class="field narrow"><span>端口</span><input id="t-port" placeholder="7400" /></label>
+          </div>
+          <div class="row gap">
+            <label class="field"><span>user</span><input id="t-user" placeholder="admin" /></label>
+            <label class="field"><span>password</span><input id="t-pass" type="password" /></label>
+            <button id="btn-add-target" class="btn" style="align-self:flex-end">添加并测试</button>
+          </div>
+          <div class="hint">凭据保存在 ~/.config/frp-client/app.toml（0600），仅本机可读</div>
+        </div>
+      </div>
+      <div class="row right">
+        <button id="btn-raw" class="btn ghost">查看原始 TOML</button>
+      </div>
+      <pre id="raw-box" class="raw hidden"></pre>
+    </section>
+
+    <!-- ============ AI 编排（占位） ============ -->
+    <section id="page-ai" class="page col">
+      <div class="card ai-card">
+        <div class="ai-glyph">✦</div>
+        <div class="ai-title">AI 编排 · 规划中</div>
+        <div class="ai-sub">用自然语言描述需求，自动生成 frpc 隧道配置草案。<br />该能力尚未实现，当前请使用「配置预览」页手动管理隧道。</div>
+      </div>
+    </section>
+
+    <!-- ============ 日志 ============ -->
+    <section id="page-logs" class="page col">
+      <div class="card logbar" id="log-local">
+        <button id="log-out" class="btn primary sm">/tmp/frpc.log</button>
+        <button id="log-err" class="btn sm">/tmp/frpc.err</button>
+        <button id="log-refresh" class="btn sm">刷新</button>
+        <span id="log-path" class="flex1 right faint"></span>
+      </div>
+      <div class="card ai-card hidden" id="log-remote">
+        <div class="ai-title">远端目标不支持查看日志</div>
+        <div class="ai-sub">切换到「本机」目标查看本机日志，或 SSH 到远端机器查看其 frpc 日志。</div>
+      </div>
+      <pre id="log-box" class="raw flex1"></pre>
+    </section>
+  </main>
+</div>
+<div id="toasts" class="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

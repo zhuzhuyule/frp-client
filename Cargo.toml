@@ -1,0 +1,23 @@
+[package]
+name = "frp-client-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.22"
+ureq = { version = "2.10", features = ["json"] }
+base64 = "0.22"
+anyhow = "1"
+
+[build-dependencies]
+tauri-build = "2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+opt-level = "s"
