@@ -763,6 +763,13 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     }))
 }
 
+fn basics_json(b: &BackendBasics) -> serde_json::Value {
+    serde_json::json!({
+        "serverAddr": b.server_addr, "serverPort": b.server_port, "token": b.token,
+        "webAddr": b.web_addr, "webPort": b.web_port, "webUser": b.web_user, "webPass": b.web_pass,
+    })
+}
+
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let staged = state.staged.lock().unwrap().clone();
@@ -777,12 +784,7 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
             })
         })
         .collect();
-    let basics = parse_basics(&staged).ok().map(|b| {
-        serde_json::json!({
-            "serverAddr": b.server_addr, "serverPort": b.server_port, "token": b.token,
-            "webAddr": b.web_addr, "webPort": b.web_port, "webUser": b.web_user, "webPass": b.web_pass,
-        })
-    });
+    let basics = parse_basics(&staged).ok().as_ref().map(basics_json);
     Ok(serde_json::json!({ "raw": staged, "basics": basics, "proxies": proxies, "storeMode": store_mode }))
 }
 
@@ -808,7 +810,7 @@ async fn add_proxy_cmd(state: State<'_, AppState>, np: NewProxyDto) -> Result<St
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = backend::add_proxy(&staged, &p).map_err(|e| format!("{e:#}"))?;
-    Ok("已加入暂存列表，点「保存并生效」写入目标".to_string())
+    Ok("已加入暂存列表，点右上角的保存按钮写入目标".to_string())
 }
 
 #[tauri::command]
@@ -835,7 +837,7 @@ async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<St
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = remove_proxy(&staged, &name).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已从暂存配置移除「{name}」，点「保存并生效」写入目标"))
+    Ok(format!("已从暂存配置移除「{name}」，点右上角的保存按钮写入目标"))
 }
 
 /// 改一条隧道：store 条目直接改（立即生效），文件条目仍只动暂存区
@@ -875,23 +877,19 @@ async fn update_proxy_cmd(
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = backend::update_proxy(&staged, &original, &p).map_err(|e| format!("{e:#}"))?;
-    Ok("已改动暂存配置，点「保存并生效」写入目标".to_string())
+    Ok("已改动暂存配置，点右上角的保存按钮写入目标".to_string())
 }
 
-#[tauri::command]
-async fn save_config_cmd(
-    state: State<'_, AppState>,
-    basics: BasicsDto,
-    with_restart: bool,
-) -> Result<String, String> {
-    let (a, ep) = active_endpoint(&state)?;
-    let staged = state.staged.lock().unwrap().clone();
-    let basics = basics.into_backend();
-    let new_src = apply_basics(&staged, &basics).map_err(|e| format!("{e:#}"))?;
+/// 把一整篇 TOML 写入活动目标：本机走文件（可选重启 + 失败自动回滚），远端走热加载。
+/// 两种入口（UI 换算出的文本、裸 TOML 编辑）共用这条路径，因此闸门按文本里解析出的
+/// webServer 检查，而不是按界面提交的表单——裸编辑同样不能写出绑不了的管理接口。
+async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> Result<String, String> {
+    let (a, ep) = active_endpoint(state)?;
     let (note, authoritative) = match a {
         Active::Local(id) => {
-            let inst = local_instance(&state, &id)?;
-            guard_local_basics(&state, &id, &basics)?;
+            let inst = local_instance(state, &id)?;
+            let basics = parse_basics(&new_src).map_err(|e| format!("{e:#}"))?;
+            guard_local_basics(state, &id, &basics)?;
             if with_restart && !inst.managed {
                 return Err(
                     "该实例不由本 App 的 LaunchAgent 监督，只能保存配置，请自行重启它".to_string()
@@ -950,6 +948,38 @@ async fn save_config_cmd(
     };
     *state.staged.lock().unwrap() = authoritative;
     Ok(note)
+}
+
+#[tauri::command]
+async fn save_raw_cmd(
+    state: State<'_, AppState>,
+    raw: String,
+    with_restart: bool,
+) -> Result<String, String> {
+    write_config(&state, raw, with_restart).await
+}
+
+/// 整篇暂存配置生效（含未保存的隧道增删改）
+#[tauri::command]
+async fn apply_staged_cmd(
+    state: State<'_, AppState>,
+    with_restart: bool,
+) -> Result<String, String> {
+    let staged = state.staged.lock().unwrap().clone();
+    write_config(&state, staged, with_restart).await
+}
+
+/// UI 表单 → TOML 文本：在 base 上覆盖基础配置，不动隧道
+#[tauri::command]
+fn render_raw_cmd(basics: BasicsDto, base: String) -> Result<String, String> {
+    apply_basics(&base, &basics.into_backend()).map_err(|e| format!("{e:#}"))
+}
+
+/// TOML 文本 → UI 表单
+#[tauri::command]
+fn parse_raw_cmd(raw: String) -> Result<serde_json::Value, String> {
+    let b = parse_basics(&raw).map_err(|e| format!("{e:#}"))?;
+    Ok(basics_json(&b))
 }
 
 #[tauri::command]
@@ -1048,7 +1078,10 @@ fn main() {
             add_proxy_cmd,
             update_proxy_cmd,
             remove_proxy_cmd,
-            save_config_cmd,
+            save_raw_cmd,
+            apply_staged_cmd,
+            render_raw_cmd,
+            parse_raw_cmd,
             proc_cmd,
             read_log
         ])

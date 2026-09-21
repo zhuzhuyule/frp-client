@@ -5,26 +5,29 @@ const $ = (id) => document.getElementById(id);
 const state = {
   page: "tunnels",
   busy: false,
+  // dirty：暂存区里有还没写入目标的改动
   dirty: false,
+  // stale：屏幕上有东西已经过期，需要点刷新
+  stale: false,
   search: "",
   status: null,
   targets: { active: "local", activeId: "", activeName: "", list: [] },
-  cfg: { raw: "", basics: null, proxies: [] },
+  cfg: { raw: "", basics: null, proxies: [], storeMode: false },
   logKind: "stdout",
-  showRaw: false,
-  expandLocal: "",
   promptedCreds: false,
-  editing: null,
   storeMode: false,
-  editRemote: "",
+  editing: null,
+  // 服务器设置弹窗里的草稿：raw 是唯一真相，UI 表单只是它的一个视图
+  srv: { tab: "ui", raw: "", dirty: false },
+  // 设备弹窗：editing 为已有设备的 id（新建时为空）
+  dev: { kind: "remote", editing: "" },
 };
 
 const PAGE_META = {
   tunnels: ["隧道管理", "查看隧道与本机进程 · 直接增删映射"],
-  config: ["配置预览", "编辑这台 frpc 自己的配置 · 本机重启生效，远端热加载"],
+  config: ["配置预览", "这台设备的连接方式与它自己的配置 · 点右下角进入编辑"],
   ai: ["AI 编排", "自然语言生成隧道配置（规划中）"],
   logs: ["日志", "查看 frpc 标准输出 / 标准错误日志"],
-  settings: ["设置", "设备与连接 · App 连哪台 frpc 的控制台"],
 };
 
 function typeCls(t) {
@@ -59,14 +62,19 @@ function toast(text, kind = "ok") {
   }, kind === "err" ? 6000 : 4000);
 }
 
+/* 有改动 / 有写入 → 提醒去点刷新；点了刷新就灭 */
+function markStale() {
+  state.stale = true;
+  $("btn-refresh").classList.add("attn");
+}
+function clearStale() {
+  state.stale = false;
+  $("btn-refresh").classList.remove("attn");
+}
+
 function setDirty(v) {
   state.dirty = v;
-  // 未保存 → 「保存」按钮高亮提醒（「保存并生效」始终是主按钮）
-  const b = $("btn-save");
-  if (b) {
-    b.classList.toggle("primary", v);
-    b.title = v ? "有未保存的修改，点击写入当前目标" : "已是最新";
-  }
+  if (v) markStale();
 }
 
 function setBusy(b) {
@@ -102,52 +110,46 @@ function showPage(p) {
   $("page-title").textContent = PAGE_META[p][0];
   $("page-sub").textContent = PAGE_META[p][1];
   if (p === "tunnels") renderTunnels();
-  if (p === "config") { renderConfig(); renderTargetTabs(); }
+  if (p === "config") { renderConfigOverview(); renderTargetTabs(); }
   if (p === "logs") loadLog();
-  if (p === "settings") renderDevices();
 }
 
 document.querySelectorAll(".nav-item").forEach((el) =>
   el.addEventListener("click", () => showPage(el.dataset.page))
 );
 $("btn-new").addEventListener("click", openAddProxy);
-$("btn-goto-tunnels").addEventListener("click", () => showPage("tunnels"));
-$("btn-goto-settings").addEventListener("click", () => showPage("settings"));
 
-/* ---------- targets ---------- */
+/* ---------- devices（设备 = App 要连的那台 frpc 控制台） ---------- */
 async function loadTargets() {
   const t = await call("get_targets");
   if (okv(t)) {
     state.targets = t;
     renderTargetTabs();
-    renderLocals();
-    renderTargets();
     if (!state.promptedCreds) {
       const miss = t.list.filter((x) => x.kind === "local" && x.needCreds);
       if (miss.length) {
         state.promptedCreds = true;
-        toast(`「${miss[0].name}」还缺控制台凭据，到「设置」页补全后即可读取状态`, "info");
+        toast(`「${miss[0].name}」还缺控制台凭据，点它的 ✎ 补全后即可读取状态`, "info");
       }
-      if (!t.list.length) toast("未识别到任何设备，到「设置」页扫描本机或添加远端", "info");
+      if (!t.list.length) toast("还没有任何设备，点标签行的「＋ 新建设备」", "info");
     }
   }
 }
 
 function tabsHtml() {
   const { activeId, list } = state.targets;
-  if (!list.length) {
-    return `<div class="ttab active"><span class="tt-dot off"></span><span class="tt-label">未识别到目标</span></div>`;
-  }
+  const add = `<div class="ttab tt-add" title="新建设备"><span class="tt-plus">＋</span><span class="tt-label">新建设备</span></div>`;
+  if (!list.length) return add;
   return list
     .map((x) => {
       const isActive = x.id === activeId;
       const dot = isActive ? (state.status && state.status.running ? "run" : "off") : "";
       const glyph = OS_GLYPH[x.os] || "";
       return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-id="${esc(x.id)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}${x.kind === "local" ? " · " + esc(x.id) : ""}">
-        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>${x.kind === "local" && !x.managed ? '<span class="tt-os">🔒</span>' : ""}
+        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span><span class="tt-edit" data-edit="${esc(x.id)}" title="编辑该设备">${ICO_EDIT}</span>
       </div>`;
     })
-    .join("");
+    .join("") + add;
 }
 
 async function switchTarget(kind, id) {
@@ -160,20 +162,28 @@ async function switchTarget(kind, id) {
 
 async function afterTargetChange() {
   await loadTargets();
-  await refreshStatus();
   await loadConfig();
+  await refreshStatus();
   setDirty(false);
+  clearStale();
   applyMode();
 }
 
 function bindTabs(el) {
-  el.querySelectorAll(".ttab[data-id]").forEach((tab) =>
-    tab.addEventListener("click", () => {
+  el.querySelectorAll(".ttab[data-id]").forEach((tab) => {
+    tab.addEventListener("click", (e) => {
+      if (e.target.closest(".tt-edit")) return;
       const { kind, id } = tab.dataset;
       if (id === state.targets.activeId) return;
       switchTarget(kind, id);
-    })
-  );
+    });
+    const pen = tab.querySelector(".tt-edit");
+    if (pen) pen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDeviceModal(pen.dataset.edit);
+    });
+  });
+  el.querySelectorAll(".tt-add").forEach((tab) => tab.addEventListener("click", () => openDeviceModal("")));
 }
 
 function renderTargetTabs() {
@@ -195,171 +205,132 @@ function applyMode() {
     b.textContent = remote ? "保存并热加载" : managed ? "保存并重启 frpc" : "保存";
     b.disabled = state.busy;
   });
-  const save = $("btn-save");
-  if (save) save.title = remote ? "保存到远端并热加载" : "写入当前目标的配置文件（不重启）";
   $("log-local").classList.toggle("hidden", remote);
   $("log-remote").classList.toggle("hidden", !remote);
   $("log-box").classList.toggle("hidden", remote);
 }
 
-/* ---------- 设置页：本机 frpc 实例 ---------- */
-function localBadge(x) {
-  const parts = [
-    x.id === state.targets.activeId ? '<span class="badge cur">当前</span>' : "",
-    x.managed ? '<span class="badge mgd">托管</span>' : '<span class="badge ro">只读</span>',
-    x.needCreds ? '<span class="badge warn">缺凭据</span>' : "",
-    `<span class="badge ${x.pid ? "run" : "stop"}">${x.pid ? "PID " + x.pid : "未运行"}</span>`,
-  ];
-  return parts.join("");
+/* ---------- 设备弹窗：新建与编辑同一个表单 ---------- */
+function openDeviceModal(id) {
+  const x = id ? state.targets.list.find((y) => y.id === id) : null;
+  state.dev = { kind: x ? x.kind : "remote", editing: x ? x.id : "" };
+  $("dv-title").textContent = x ? `编辑设备 · ${x.name}` : "新建设备";
+  $("d-name").value = x ? x.name : "";
+  $("d-host").value = x ? x.host : "";
+  $("d-port").value = x ? String(x.port || "") : "";
+  $("d-user").value = x ? x.user || "" : "";
+  $("d-pass").value = "";
+  $("d-os").value = x ? x.os || "" : "";
+  $("d-cfg").value = x && x.kind === "local" ? x.configPath : "";
+  styleDeviceModal();
+  $("device-mask").classList.remove("hidden");
+  $("d-name").focus();
 }
 
-function renderLocals() {
-  const box = $("local-rows");
-  const locals = state.targets.list.filter((x) => x.kind === "local");
-  box.innerHTML =
-    locals
-      .map((x) => {
-        const open = state.expandLocal === x.id;
-        const need = x.needCreds;
-        return `<div class="lrow ${x.id === state.targets.activeId ? "active-row" : ""}">
-          <span class="l-main">
-            <b>${esc(x.name)}</b>
-            <i title="${esc(x.configPath)}">${esc(x.host)}:${esc(x.port)} · ${esc(x.configPath)}</i>
-          </span>
-          ${localBadge(x)}
-          <button class="btn sm act-use" data-id="${esc(x.id)}" ${x.id === state.targets.activeId ? "disabled" : ""}>切换</button>
-          <button class="btn sm act-edit" data-id="${esc(x.id)}">${open ? "收起" : need ? "补全凭据" : "编辑"}</button>
-          <button class="btn sm danger act-rm" data-id="${esc(x.id)}">移除</button>
-        </div>
-        ${open ? editLocalForm(x) : ""}`;
-      })
-      .join("") ||
-    `<div class="hint" style="padding:6px 2px">未识别到本机 frpc 实例。启动 frpc 后点「重新扫描本机」，或手动指定它的配置文件。</div>`;
-
-  box.querySelectorAll(".act-use").forEach((b) =>
-    b.addEventListener("click", async () => {
-      if (await switchTarget("local", b.dataset.id)) renderDevices();
-    })
+function styleDeviceModal() {
+  const { kind, editing } = state.dev;
+  $("dv-kind").classList.toggle("hidden", !!editing);
+  document.querySelectorAll("#dv-kind .mtab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.kind === kind)
   );
-  box.querySelectorAll(".act-edit").forEach((b) =>
-    b.addEventListener("click", () => {
-      state.expandLocal = state.expandLocal === b.dataset.id ? "" : b.dataset.id;
-      renderLocals();
-    })
-  );
-  box.querySelectorAll(".act-rm").forEach((b) =>
-    b.addEventListener("click", () => removeLocal(b.dataset.id))
-  );
-  box.querySelectorAll(".l-save-name").forEach((b) => b.addEventListener("click", () => saveLocalName(b.dataset.id)));
-  box.querySelectorAll(".l-save-cons").forEach((b) => b.addEventListener("click", () => saveLocalConsole(b.dataset.id)));
+  $("d-host-label").textContent = kind === "local" ? "控制台地址（本机一般 127.0.0.1）" : "主机";
+  $("d-host").placeholder = kind === "local" ? "127.0.0.1" : "192.168.3.10";
+  $("d-os-wrap").classList.toggle("hidden", kind === "local");
+  $("d-cfg-wrap").classList.toggle("hidden", kind !== "local");
+  $("d-cfg").disabled = !!editing;
+  $("btn-dv-remove").classList.toggle("hidden", !editing);
+  $("btn-dv-rescan").classList.toggle("hidden", kind !== "local");
+  $("btn-dv-ok").textContent = editing ? "保存并测试" : "添加并测试";
+  $("dv-hint").textContent = kind === "local"
+    ? "本机实例通常由「重新扫描本机」从运行中的 frpc 进程参数里自动识别；手动填用于 App 读不到进程的情况。凭据存放在 ~/.config/frp-client/app.toml（0600）。"
+    : editing
+      ? "这里改的是 App 怎么连这台设备，不会动它自己的 frpc 配置；密码留空表示沿用原值。保存前会先测一次连通。"
+      : "frpc 的 API 不返回系统信息，机器类型只是展示用的图标；远端可以读取状态与热加载配置，不能控制进程。";
 }
 
-function editLocalForm(x) {
-  return `<div class="subform" data-form="${esc(x.id)}">
-    <div class="pgrid">
-      <label class="field"><span>名称</span><input class="f-name" value="${esc(x.name)}" /></label>
-      <label class="field"><span>配置文件</span><input value="${esc(x.configPath)}" disabled /></label>
-    </div>
-    <div class="pgrid">
-      <label class="field"><span>控制台 addr</span><input class="f-addr" value="${esc(x.host)}" /></label>
-      <label class="field narrow"><span>port</span><input class="f-port" value="${esc(x.port)}" /></label>
-      <label class="field"><span>user</span><input class="f-user" value="${esc(x.user || "")}" /></label>
-      <label class="field"><span>password</span><input class="f-pass" type="password" placeholder="${x.needCreds ? "必填" : "留空保持不变"}" /></label>
-    </div>
-    <div class="row gap">
-      <button class="btn sm l-save-name" data-id="${esc(x.id)}">保存名称</button>
-      <button class="btn primary sm l-save-cons" data-id="${esc(x.id)}">保存并测试控制台</button>
-    </div>
-    <div class="hint">只有由 LaunchAgent 监督的实例可由本 App 启停；其余实例只做只读管理。凭据写入 ~/.config/frp-client/app.toml（0600）。</div>
-  </div>`;
+function closeDeviceModal() {
+  $("device-mask").classList.add("hidden");
+  state.dev = { kind: "remote", editing: "" };
 }
 
-function formOf(id) {
-  return document.querySelector(`.subform[data-form="${cssEscape(id)}"]`);
-}
-function cssEscape(s) {
-  return (s ?? "").replace(/["\\]/g, "\\$&");
-}
-
-async function saveLocalName(id) {
-  const f = formOf(id);
-  const name = f.querySelector(".f-name").value.trim();
-  const note = await call("rename_local", { id, name });
-  if (okv(note)) {
-    toast(note);
-    await loadTargets();
-  }
-}
-
-async function saveLocalConsole(id) {
-  const f = formOf(id);
-  const args = {
-    id,
-    addr: f.querySelector(".f-addr").value.trim(),
-    port: f.querySelector(".f-port").value.trim(),
-    user: f.querySelector(".f-user").value.trim(),
-    password: f.querySelector(".f-pass").value,
-  };
-  const note = await call("set_local_console", args);
-  if (okv(note)) {
-    toast(note, note.startsWith("已保存，但") ? "info" : "ok");
-    await loadTargets();
-    await refreshStatus();
-    applyMode();
-  }
-}
-
-async function removeLocal(id) {
-  const ok = await showConfirm("移除该本机实例？", "只会删除 App 里对该实例的标注；若它仍在运行或由 LaunchAgent 监督，扫描后会重新出现。", "移除");
-  if (!ok) return;
-  const note = await call("remove_local", { id });
-  if (okv(note)) {
-    toast(note, "info");
-    state.expandLocal = "";
-    await afterTargetChange();
-    renderDevices();
-  }
-}
-
-$("btn-show-add-local").addEventListener("click", () => $("add-local").classList.toggle("hidden"));
-document.querySelectorAll(".js-hide-local").forEach((b) =>
-  b.addEventListener("click", () => $("add-local").classList.add("hidden"))
-);
-$("btn-add-local").addEventListener("click", async () => {
-  const args = {
-    configPath: $("l-cfg").value.trim(),
-    name: $("l-name").value.trim(),
-    addr: $("l-addr").value.trim(),
-    port: $("l-port").value.trim(),
-    user: $("l-user").value.trim(),
-    password: $("l-pass").value,
-  };
-  if (!args.configPath) {
-    toast("配置文件路径不能为空", "err");
+async function submitDevice() {
+  const { kind, editing } = state.dev;
+  const name = $("d-name").value.trim();
+  const host = $("d-host").value.trim();
+  const port = $("d-port").value.trim();
+  const user = $("d-user").value.trim();
+  const password = $("d-pass").value;
+  if (!name) {
+    toast("名称不能为空", "err");
     return;
   }
-  const note = await call("add_local", args);
+  let note;
+  if (kind === "local") {
+    const configPath = editing || $("d-cfg").value.trim();
+    if (!configPath) {
+      toast("配置文件路径不能为空", "err");
+      return;
+    }
+    note = await call("add_local", { configPath, name, addr: host, port, user, password });
+  } else {
+    if (!host) {
+      toast("主机地址不能为空", "err");
+      return;
+    }
+    const args = { name, host, port: port || "7400", user, password, os: $("d-os").value };
+    note = editing ? await call("update_target", { original: editing, ...args }) : await call("add_target", args);
+  }
+  if (!okv(note)) return;
+  toast(note);
+  closeDeviceModal();
+  await afterTargetChange();
+}
+
+async function removeDevice() {
+  const { kind, editing } = state.dev;
+  if (!editing) return;
+  const ok = await showConfirm(
+    "移除该设备？",
+    kind === "local"
+      ? "只会删除 App 里对这台本机实例的标注；若它仍在运行或被 LaunchAgent 监督，重新扫描后会再出现。"
+      : `将从 App 中移除「${editing}」及其存放的凭据，不会影响设备上的 frpc。`,
+    "移除"
+  );
+  if (!ok) return;
+  const note = await call(kind === "local" ? "remove_local" : "remove_target", kind === "local" ? { id: editing } : { name: editing });
+  closeDeviceModal();
   if (okv(note)) {
-    toast(note);
-    ["l-cfg", "l-name", "l-addr", "l-port", "l-user", "l-pass"].forEach((i) => ($(i).value = ""));
-    $("add-local").classList.add("hidden");
+    toast(note, "info");
     await afterTargetChange();
   }
-});
+}
 
-$("btn-rescan").addEventListener("click", async () => {
+$("btn-dv-ok").addEventListener("click", submitDevice);
+$("btn-dv-cancel").addEventListener("click", closeDeviceModal);
+$("btn-dv-close").addEventListener("click", closeDeviceModal);
+$("btn-dv-remove").addEventListener("click", removeDevice);
+$("device-mask").addEventListener("click", (e) => {
+  if (e.target === $("device-mask")) closeDeviceModal();
+});
+document.querySelectorAll("#dv-kind .mtab").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.dev.kind = b.dataset.kind;
+    styleDeviceModal();
+  })
+);
+$("btn-dv-rescan").addEventListener("click", async () => {
   const note = await call("rescan_locals");
   if (okv(note)) {
     toast(note);
+    closeDeviceModal();
     await afterTargetChange();
-    renderDevices();
   }
 });
+$("btn-edit-device").addEventListener("click", () => openDeviceModal(state.targets.activeId));
 
-/* ---------- 设置页：连接参数与设备配置的漂移 ---------- */
+/* ---------- 配置里的 webServer 与设备连接参数漂移 ---------- */
 /* 设备记的是「App 用什么地址连」，配置里的 webServer 是「那台 frpc 自己绑在哪」。
-   改了配置里的端口 / 账号并重启后，设备侧不同步就连不上了。addr 不参与比较：
-   远端常常绑 0.0.0.0，而 App 用它的局域网地址连，两者本就不该相同。 */
+   addr 不参与比较：远端常常绑 0.0.0.0，而 App 用它的局域网地址连，两者本就不该相同。 */
 function driftItems() {
   const t = activeTarget();
   const b = (state.cfg || {}).basics;
@@ -374,22 +345,17 @@ function driftItems() {
   return items.length ? items : null;
 }
 
-function driftHtml() {
-  const items = driftItems();
-  if (!items) return "";
-  const t = activeTarget();
-  return `${items.join("；")}。若已保存并重启过，可把设备「${esc(t.name)}」的连接参数改成配置里的值。`
-    + ` <button class="btn sm js-align">按配置更新设备连接</button>`;
-}
-
 function renderDrift() {
-  const html = driftHtml();
-  for (const id of ["conn-drift", "c-drift"]) {
-    const el = $(id);
-    if (!el) continue;
-    el.classList.toggle("hidden", !html);
-    el.innerHTML = html;
+  const el = $("conn-drift");
+  const items = driftItems();
+  if (!items) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
   }
+  const t = activeTarget();
+  el.innerHTML = `${items.join("；")}。若已保存并重启过，可把设备「${esc(t.name)}」的连接参数改成配置里的值。<button class="btn sm js-align">按配置更新设备连接</button>`;
+  el.classList.remove("hidden");
 }
 
 async function alignDevice() {
@@ -405,123 +371,10 @@ async function alignDevice() {
   if (!okv(note)) return;
   toast(note, String(note).includes("但") ? "info" : "ok");
   await afterTargetChange();
-  renderDevices();
 }
 document.addEventListener("click", (e) => {
   if (e.target.classList.contains("js-align")) alignDevice();
 });
-
-function renderDevices() {
-  const t = activeTarget();
-  const b = (state.cfg || {}).basics || {};
-  $("s-cur").textContent = t
-    ? `${t.name}（${t.kind === "local" ? (t.managed ? "本机 · 托管" : "本机 · 只读") : "远端"}）`
-    : "—";
-  $("s-ep").textContent = t ? `${t.host}:${t.port}${t.user ? " · " + t.user : ""}` : "—";
-  $("s-cfg-web").textContent = b.webAddr
-    ? `${b.webAddr}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
-    : "未读取到配置";
-  renderLocals();
-  renderTargets();
-  renderDrift();
-}
-
-/* ---------- 设置页：远端设备 ---------- */
-function renderTargets() {
-  const remotes = state.targets.list.filter((x) => x.kind === "remote");
-  $("target-rows").innerHTML =
-    remotes
-      .map(
-        (x) => `<div class="lrow ${x.id === state.targets.activeId ? "active-row" : ""}">
-          <span class="l-main">
-            <b>${esc(x.name)}</b>
-            <i>${esc(x.host)}:${esc(String(x.port))}${x.user ? " · " + esc(x.user) : ""}</i>
-          </span>
-          ${x.id === state.targets.activeId ? '<span class="badge cur">当前</span>' : ""}
-          <button class="btn sm r-use" data-id="${esc(x.id)}" ${x.id === state.targets.activeId ? "disabled" : ""}>切换</button>
-          <button class="btn sm r-edit" data-id="${esc(x.id)}">编辑</button>
-          <button class="btn danger sm r-rm" data-id="${esc(x.id)}">移除</button>
-        </div>`
-      )
-      .join("") || `<div class="hint" style="padding:6px 2px">暂无远端设备 · 点右上角「＋ 添加设备」登记另一台机器上的 frpc 控制台</div>`;
-
-  $("target-rows").querySelectorAll(".r-use").forEach((b) =>
-    b.addEventListener("click", async () => {
-      if (await switchTarget("remote", b.dataset.id)) renderDevices();
-    })
-  );
-  $("target-rows").querySelectorAll(".r-edit").forEach((b) =>
-    b.addEventListener("click", () => openRemoteForm(b.dataset.id))
-  );
-  $("target-rows").querySelectorAll(".r-rm").forEach((b) =>
-    b.addEventListener("click", () => removeTarget(b.dataset.id))
-  );
-}
-
-function closeRemoteForm() {
-  state.editRemote = "";
-  ["t-name", "t-host", "t-port", "t-user", "t-pass"].forEach((i) => ($(i).value = ""));
-  $("t-os").value = "";
-  $("add-remote").classList.add("hidden");
-}
-
-function openRemoteForm(name) {
-  const x = name ? state.targets.list.find((y) => y.kind === "remote" && y.id === name) : null;
-  state.editRemote = x ? x.id : "";
-  $("t-name").value = x ? x.name : "";
-  $("t-host").value = x ? x.host : "";
-  $("t-port").value = x ? x.port : "";
-  $("t-user").value = x ? x.user || "" : "";
-  $("t-pass").value = "";
-  $("t-os").value = x ? x.os || "" : "";
-  $("btn-add-target").textContent = x ? "保存并测试" : "添加并测试";
-  $("remote-hint").textContent = x
-    ? "这里改的是 App 怎么连这台设备，不会动它自己的 frpc 配置；密码留空表示沿用原值。"
-    : "frpc API 不返回系统信息，机器类型仅作展示用图标；远端只读状态与热加载配置，不能控制进程。";
-  $("add-remote").classList.remove("hidden");
-  $("t-name").focus();
-}
-
-$("btn-add-target").addEventListener("click", async () => {
-  const args = {
-    name: $("t-name").value.trim(),
-    host: $("t-host").value.trim(),
-    port: $("t-port").value.trim() || "7400",
-    user: $("t-user").value.trim(),
-    password: $("t-pass").value,
-    os: $("t-os").value,
-  };
-  if (!args.name || !args.host) {
-    toast("名称和主机必填", "err");
-    return;
-  }
-  const editing = state.editRemote;
-  const note = editing
-    ? await call("update_target", { original: editing, ...args })
-    : await call("add_target", args);
-  if (!okv(note)) return;
-  toast(note);
-  closeRemoteForm();
-  await afterTargetChange();
-  renderDevices();
-});
-
-async function removeTarget(name) {
-  const ok = await showConfirm("移除该设备？", `将从 App 中移除「${name}」及其保存的凭据，不会影响设备上的 frpc。`, "移除");
-  if (!ok) return;
-  const note = await call("remove_target", { name });
-  if (okv(note)) {
-    toast(note, "info");
-    await afterTargetChange();
-    renderDevices();
-  }
-}
-
-$("btn-show-add-remote").addEventListener("click", () => {
-  if ($("add-remote").classList.contains("hidden")) openRemoteForm("");
-  else closeRemoteForm();
-});
-document.querySelectorAll(".js-hide-remote").forEach((b) => b.addEventListener("click", closeRemoteForm));
 
 /* ---------- status rendering ---------- */
 async function refreshStatus() {
@@ -532,9 +385,8 @@ async function refreshStatus() {
     $("side-status").textContent = "● 未识别到目标";
     $("side-status").classList.add("off");
     $("tunnel-rows").innerHTML = "";
-    $("ov-line").textContent = "";
-    $("chip-mode").textContent = "";
     renderTargetTabs();
+    renderConfigOverview();
     toast(`状态获取失败：${e}`, "err");
     return;
   }
@@ -554,28 +406,16 @@ async function refreshStatus() {
   renderTargetTabs();
   renderTunnels();
   renderOverview(s);
-  renderConfigMeta();
+  renderConfigOverview();
 }
 
 function renderOverview(s) {
   if (!s) return;
   state.storeMode = !!s.storeMode;
   const run = $("chip-run");
-  run.textContent = s.running ? "● 运行中" : "● 不可达";
+  run.textContent = s.running ? `● 运行中 · ${s.runningCount} / ${s.proxyCount} 条隧道` : "● frpc 不可达";
   run.className = "chip " + (s.running ? "ok" : "bad");
-  $("chip-cnt").textContent = `隧道 ${s.runningCount} / ${s.proxyCount} · API ${s.apiReachable ? "可达" : "不可达"}`;
-  const mode = $("chip-mode");
-  mode.textContent = state.storeMode ? "隧道实时生效（store）" : "隧道改配置文件（需保存生效）";
-  mode.className = "chip" + (state.storeMode ? " ok" : "");
-  const seg = (k, v) => (v ? `${k} <b>${esc(String(v))}</b>` : "");
-  const bits = [
-    seg("服务端", `${s.serverAddr}:${s.serverPort}`),
-    seg("控制台", s.webUrl),
-    s.mode === "local" ? seg("PID", s.running ? s.pid : "未运行") : "",
-    seg("配置", s.configPath || "远端（通过 API 读写）"),
-    s.mode === "local" ? seg("保存", s.savedAt) : "",
-  ].filter(Boolean);
-  $("ov-line").innerHTML = bits.join('<span class="sep">·</span>');
+  $("chip-cnt").textContent = `共 ${s.proxyCount} 条 · API ${s.apiReachable ? "可达" : "不可达"}`;
   $("btn-start").disabled = s.running || state.busy;
   $("btn-stop").disabled = !s.running || state.busy;
 }
@@ -617,7 +457,7 @@ function renderTunnels() {
   $("tunnel-empty").classList.toggle("hidden", rows.length > 0);
   if (!hasTarget) {
     $("tunnel-empty").classList.remove("hidden");
-    $("tunnel-empty").innerHTML = "未识别到任何设备 · 到「设置」页扫描本机或添加远端";
+    $("tunnel-empty").innerHTML = "未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端";
   }
   if (s) renderOverview(s);
   const box = $("tunnel-rows");
@@ -670,7 +510,7 @@ async function deleteProxy(name) {
     "删除隧道？",
     live
       ? `将立即从当前 frpc 中移除「${name}」并停止这条映射，无需重启。`
-      : `将从暂存配置中移除「${name}」，点「保存并生效」后落地。`,
+      : `将从暂存配置中移除「${name}」，点右上角的保存按钮后落地。`,
     "删除"
   );
   if (!ok) return;
@@ -687,30 +527,17 @@ $("search").addEventListener("input", (e) => {
   renderTunnels();
 });
 
-/* ---------- save ---------- */
-["c-addr", "c-port", "c-token", "c-web-addr", "c-web-port", "c-web-user", "c-web-pass"].forEach((id) =>
-  $(id).addEventListener("input", () => setDirty(true))
-);
-
-document.querySelectorAll(".eye").forEach((btn) =>
-  btn.addEventListener("click", () => {
-    const inp = $(btn.dataset.for);
-    const show = inp.type === "password";
-    inp.type = show ? "text" : "password";
-    btn.textContent = show ? "隐藏" : "显示";
-  })
-);
-
-async function saveCfg(withRestart) {
-  const note = await call("save_config_cmd", { basics: basicsFromForm(), withRestart });
-  if (okv(note)) {
-    toast(note);
-    setDirty(false);
-    await loadConfig();
-    await refreshStatus();
-  }
+/* ---------- 隧道页：整篇暂存配置生效 ---------- */
+async function applyStaged(withRestart) {
+  const note = await call("apply_staged_cmd", { withRestart });
+  if (!okv(note)) return;
+  toast(note);
+  setDirty(false);
+  clearStale();
+  await loadConfig();
+  await refreshStatus();
 }
-document.querySelectorAll(".js-save").forEach((b) => b.addEventListener("click", () => saveCfg(false)));
+
 document.querySelectorAll(".js-apply").forEach((b) =>
   b.addEventListener("click", async () => {
     const remote = isRemote();
@@ -719,16 +546,16 @@ document.querySelectorAll(".js-apply").forEach((b) =>
     if (!remote && !managed) {
       toast("该实例不由 App 监督，只写入配置文件，请自行重启它", "info");
     }
-    if (remote || !managed) {
-      await saveCfg(false);
+    if (!remote && managed) {
+      const ok = await showConfirm(
+        "保存并重启 frpc？",
+        "写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
+        "确认重启"
+      );
+      if (ok) applyStaged(true);
       return;
     }
-    const ok = await showConfirm(
-      "保存并重启 frpc？",
-      "写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
-      "确认重启"
-    );
-    if (ok) saveCfg(true);
+    await applyStaged(false);
   })
 );
 
@@ -752,46 +579,62 @@ function showConfirm(title, body, okLabel = "确认") {
   });
 }
 
-/* ---------- config ---------- */
+/* ---------- config（页面只读概览，编辑走弹窗） ---------- */
 async function loadConfig() {
   const cfg = await call("get_config");
   if (okv(cfg)) {
     state.cfg = cfg;
     if (typeof cfg.storeMode === "boolean") state.storeMode = cfg.storeMode;
-    renderConfig();
+    if (state.srv.dirty) styleSrvFoot();
   }
 }
 
-function renderConfig() {
-  const c = state.cfg;
-  const b = c.basics || {};
-  $("c-addr").value = b.serverAddr ?? "";
-  $("c-port").value = b.serverPort ?? "";
-  $("c-token").value = b.token ?? "";
-  $("c-web-addr").value = b.webAddr ?? "";
-  $("c-web-port").value = b.webPort ?? "";
-  $("c-web-user").value = b.webUser ?? "";
-  $("c-web-pass").value = b.webPass ?? "";
-  renderConfigMeta();
-  if (state.showRaw) $("raw-box").textContent = c.raw;
-}
-
-function renderConfigMeta() {
-  const s = state.status;
+function renderConfigOverview() {
   const t = activeTarget();
+  const s = state.status;
   const b = state.cfg.basics || {};
-  $("i-target").textContent = t ? `${t.name}（${t.kind === "local" ? (t.managed ? "本机 · 托管" : "本机 · 只读") : "远端"}）` : "—";
-  const storeN = state.cfg.proxies.filter((p) => p.source === "store").length;
+  const px = state.cfg.proxies || [];
+  $("ov-name").textContent = t ? t.name : "未选择设备";
+  $("ov-badges").innerHTML = t
+    ? [
+        t.kind === "local"
+          ? t.managed
+            ? '<span class="badge mgd">本机 · 托管</span>'
+            : '<span class="badge ro">本机 · 只读</span>'
+          : '<span class="badge ro">远端</span>',
+        s ? (s.running ? '<span class="badge run">● frpc 运行中</span>' : '<span class="badge stop">● frpc 不可达</span>') : "",
+        t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : "",
+      ].join("")
+    : "";
+  $("i-ep").textContent = t ? `${t.host}:${t.port}` : "—";
+  $("i-ep-user").textContent = t ? t.user || "（未填凭据）" : "—";
+  $("i-ep-run").textContent = t
+    ? t.kind === "local"
+      ? t.pid
+        ? `PID ${t.pid}${t.managed ? " · 由本 App 的 LaunchAgent 监督" : " · 不是本 App 启动的"}`
+        : t.managed
+          ? "未运行，可由本 App 启动"
+          : "未运行，且不由本 App 监督"
+      : "进程控制需在目标机上进行"
+    : "—";
+  $("i-srv").textContent = b.serverAddr ? `${b.serverAddr}:${b.serverPort || ""}` : "未读取到配置";
+  $("i-web-cfg").textContent = b.webAddr
+    ? `${b.webAddr}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
+    : "配置里没有 webServer";
+  const storeN = px.filter((p) => p.source === "store").length;
   $("i-tc").textContent =
-    `${state.cfg.proxies.length} 条` + (storeN ? `（${storeN} 条在 store，改动立即生效）` : "");
-  $("i-web").textContent = s ? s.webUrl : t ? `${t.host}:${t.port}` : "—";
-  $("i-web-cfg").textContent = b.webAddr ? `${b.webAddr}:${b.webPort || ""}` : "—";
-  $("i-cfg").textContent = (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
+    `${px.length} 条` + (storeN ? ` · ${storeN} 条在 store，${px.length - storeN} 条在配置文件` : " · 全部在配置文件里");
+  $("i-cfg").textContent =
+    (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
   $("i-saved").textContent = (s && s.savedAt) || "—";
+  const canEdit = !!t && !!(state.cfg.raw ?? "");
+  $("btn-edit-server").disabled = !canEdit || state.busy;
+  $("btn-edit-device").disabled = !t || state.busy;
   renderDrift();
 }
 
-function basicsFromForm() {
+/* ---------- 服务器设置弹窗：UI 表单 ⇄ 原始 TOML ---------- */
+function srvFields() {
   return {
     serverAddr: $("c-addr").value.trim(),
     serverPort: $("c-port").value.trim(),
@@ -802,21 +645,159 @@ function basicsFromForm() {
     webPass: $("c-web-pass").value,
   };
 }
+function srvFillFields(b) {
+  $("c-addr").value = b.serverAddr ?? "";
+  $("c-port").value = b.serverPort ?? "";
+  $("c-token").value = b.token ?? "";
+  $("c-web-addr").value = b.webAddr ?? "";
+  $("c-web-port").value = b.webPort ?? "";
+  $("c-web-user").value = b.webUser ?? "";
+  $("c-web-pass").value = b.webPass ?? "";
+}
 
-$("btn-reload").addEventListener("click", async () => {
-  await call("reload_config");
+async function openServerModal() {
   await loadConfig();
+  state.srv = { tab: "ui", raw: state.cfg.raw || "", dirty: false };
+  srvFillFields(state.cfg.basics || {});
+  $("c-raw").value = state.srv.raw;
+  const t = activeTarget();
+  $("srv-title").textContent = `编辑该台服务器的设置 · ${t ? t.name : ""}`;
+  styleSrvTabs();
+  styleSrvFoot();
+  $("server-mask").classList.remove("hidden");
+}
+
+function styleSrvTabs() {
+  document.querySelectorAll("#srv-tabs .mtab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === state.srv.tab)
+  );
+  $("srv-ui").classList.toggle("hidden", state.srv.tab !== "ui");
+  $("srv-raw").classList.toggle("hidden", state.srv.tab !== "raw");
+}
+
+/* 保存动作按设备类型给按钮：远端只能热加载，托管本机可以重启，非托管只能写文件 */
+function styleSrvFoot() {
+  const t = activeTarget();
+  const remote = !t || t.kind === "remote";
+  const managed = !remote && t.managed;
+  const save = $("btn-server-save");
+  const apply = $("btn-server-apply");
+  save.classList.toggle("hidden", remote);
+  apply.classList.toggle("hidden", !remote && !managed);
+  apply.textContent = remote ? "保存并热加载" : "保存并重启 frpc";
+  $("srv-note").textContent = remote
+    ? "远端走 API 热加载，不能重启它的进程"
+    : managed
+      ? "保存＝只写文件；保存并重启会短暂中断所有隧道"
+      : "该实例不由 App 监督，只能写文件，请自行重启它";
+  const attn = state.srv.dirty;
+  save.classList.toggle("attn", attn);
+  apply.classList.toggle("attn", attn);
+  $("btn-modal-reload").classList.toggle("attn", attn);
+}
+
+function setSrvDirty(v) {
+  state.srv.dirty = v;
+  styleSrvFoot();
+}
+
+async function switchSrvTab(to) {
+  if (to === state.srv.tab) return;
+  // 切换前先把两边对齐；对不齐就把人留在原页签改，避免出现两个互相矛盾的草稿
+  if (to === "raw") {
+    const raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
+    if (!okv(raw)) return;
+    state.srv.raw = raw;
+    $("c-raw").value = raw;
+  } else {
+    const b = await call("parse_raw_cmd", { raw: $("c-raw").value });
+    if (!okv(b)) return;
+    state.srv.raw = $("c-raw").value;
+    srvFillFields(b);
+  }
+  state.srv.tab = to;
+  styleSrvTabs();
+}
+
+document.querySelectorAll("#srv-tabs .mtab").forEach((b) =>
+  b.addEventListener("click", () => switchSrvTab(b.dataset.tab))
+);
+["c-addr", "c-port", "c-token", "c-web-addr", "c-web-port", "c-web-user", "c-web-pass"].forEach((id) =>
+  $(id).addEventListener("input", () => setSrvDirty(true))
+);
+$("c-raw").addEventListener("input", () => setSrvDirty(true));
+
+async function saveServer(withRestart) {
+  let raw = $("c-raw").value;
+  if (state.srv.tab === "ui") {
+    raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
+    if (!okv(raw)) return;
+  }
+  const note = await call("save_raw_cmd", { raw, withRestart });
+  if (!okv(note)) return;
+  toast(note);
+  setSrvDirty(false);
+  // 整篇落盘，暂存区里等着的隧道改动也一并生效了
   setDirty(false);
-  toast("已重新加载当前目标的配置");
+  clearStale();
+  await loadConfig();
+  await refreshStatus();
+  // 弹窗留在原地，内容换成目标上真正生效的那份
+  state.srv.raw = state.cfg.raw || "";
+  $("c-raw").value = state.srv.raw;
+  srvFillFields(state.cfg.basics || {});
+  styleSrvFoot();
+}
+
+async function reloadSrvDraft() {
+  if (state.srv.dirty) {
+    const ok = await showConfirm("丢弃弹窗里的改动？", "将重新读取当前配置，弹窗里未保存的改动会被丢掉。", "丢弃并重读");
+    if (!ok) return;
+  }
+  await loadConfig();
+  state.srv.raw = state.cfg.raw || "";
+  $("c-raw").value = state.srv.raw;
+  srvFillFields(state.cfg.basics || {});
+  setSrvDirty(false);
+  toast("已重新读取当前配置", "info");
+}
+
+async function closeServerModal() {
+  if (state.srv.dirty) {
+    const ok = await showConfirm("关闭编辑？", "弹窗里的改动还没有写入目标，关闭后会被丢弃。", "丢弃改动");
+    if (!ok) return;
+  }
+  setSrvDirty(false);
+  $("server-mask").classList.add("hidden");
+}
+
+$("btn-edit-server").addEventListener("click", openServerModal);
+$("btn-server-cancel").addEventListener("click", closeServerModal);
+$("btn-modal-close").addEventListener("click", closeServerModal);
+$("btn-modal-reload").addEventListener("click", reloadSrvDraft);
+$("btn-server-save").addEventListener("click", () => saveServer(false));
+$("btn-server-apply").addEventListener("click", () => saveServer(true));
+$("server-mask").addEventListener("click", (e) => {
+  if (e.target === $("server-mask")) closeServerModal();
 });
 
+document.querySelectorAll(".eye").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    const inp = $(btn.dataset.for);
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    btn.textContent = show ? "隐藏" : "显示";
+  })
+);
+
+/* ---------- 隧道弹窗 ---------- */
 function openAddProxy() {
   state.editing = null;
   $("proxy-title").textContent = "新建隧道";
   $("btn-add").textContent = state.storeMode ? "立即创建" : "加入暂存";
   $("proxy-hint").textContent = state.storeMode
     ? "该目标开了 store，新建后立即生效，无需重启"
-    : "加入暂存列表后仍需点「保存并生效」写入当前目标";
+    : "加入暂存列表后仍需点右上角的保存按钮写入当前目标";
   ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
@@ -824,15 +805,15 @@ function openAddProxy() {
   $("n-name").focus();
 }
 
-/* store 里的条目改动立即生效；配置文件里的条目仍要走「保存并生效」 */
+/* store 里的条目改动立即生效；配置文件里的条目仍要点一次保存按钮才落地 */
 function isLiveEntry(name) {
   if (!state.storeMode) return false;
-  const c = state.cfg.proxies.find((x) => x.name === name);
+  const c = (state.cfg.proxies || []).find((x) => x.name === name);
   return !!c && c.source === "store";
 }
 
 function openEditProxy(name) {
-  const c = state.cfg.proxies.find((x) => x.name === name);
+  const c = (state.cfg.proxies || []).find((x) => x.name === name);
   if (!c) {
     toast("未在当前目标里找到该隧道", "err");
     return;
@@ -843,7 +824,7 @@ function openEditProxy(name) {
   $("btn-add").textContent = live ? "立即保存" : "保存改动";
   $("proxy-hint").textContent = live
     ? "这条隧道存在 frpc 的 store 里，保存后立即生效，无需重启"
-    : "改动写入暂存后仍需点「保存并生效」落地到当前目标";
+    : "改动写入暂存后仍需点右上角的保存按钮落地到当前目标";
   $("n-name").value = c.name;
   $("n-type").value = ["tcp", "http", "udp"].includes(c.ptype) ? c.ptype : "tcp";
   $("n-local-ip").value = c.localIp || "127.0.0.1";
@@ -886,13 +867,7 @@ $("btn-add").addEventListener("click", async () => {
   await loadConfig();
   if (!live) setDirty(true);
   await refreshStatus();
-  toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点「保存并生效」写入目标");
-});
-$("btn-raw").addEventListener("click", () => {
-  state.showRaw = !state.showRaw;
-  $("raw-box").classList.toggle("hidden", !state.showRaw);
-  $("btn-raw").textContent = state.showRaw ? "隐藏原始 TOML" : "查看原始 TOML";
-  if (state.showRaw) $("raw-box").textContent = state.cfg.raw;
+  toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点右上角的保存按钮写入目标");
 });
 
 /* ---------- process ---------- */
@@ -944,19 +919,19 @@ $("log-refresh").addEventListener("click", loadLog);
 
 /* ---------- global ---------- */
 $("btn-refresh").addEventListener("click", async () => {
-  await refreshStatus();
   if (state.page === "config") await loadConfig();
+  await refreshStatus();
   if (state.page === "logs") await loadLog();
+  clearStale();
 });
 
 (async function init() {
   showPage("tunnels");
-  setDirty(false);
   await loadTargets();
   await refreshStatus();
   await loadConfig();
   applyMode();
-  renderDevices();
+  clearStale();
   setInterval(() => {
     if (document.hidden || state.busy) return;
     refreshStatus();
