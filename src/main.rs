@@ -351,21 +351,19 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
         }
         other => return Err(format!("未知目标类型 {other}")),
     };
-    let prev = active_of(&state);
     *state.active.lock().unwrap() = next.clone();
-    let staged = match pull_staged(&state).await {
-        Ok(s) => s,
-        Err(e) => {
-            *state.active.lock().unwrap() = prev;
-            return Err(format!("切换失败，目标不可达：{e}"));
-        }
+    // 选中一台设备不该要求它活着：连不上的设备同样要被改名、补凭据或移除，
+    // 所以这里照样切过去，只是暂存区清空并在提示里说明不可达。
+    let (staged, warn) = match pull_staged(&state).await {
+        Ok(s) => (s, ""),
+        Err(_) => (String::new(), " · 目标当前不可达"),
     };
     *state.staged.lock().unwrap() = staged;
     let label = match &next {
         Active::Local(i) => local_instance(&state, i)?.name,
         Active::Remote(n) => n.clone(),
     };
-    Ok(format!("已切换到目标「{label}」"))
+    Ok(format!("已切换到目标「{label}」{warn}"))
 }
 
 /// 手动添加/更新一个本机实例（配置文件路径 + 可选的控制台凭据）

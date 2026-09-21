@@ -77,10 +77,28 @@ function setDirty(v) {
   if (v) markStale();
 }
 
+/* 计数式忙碌：多步流程（换算 → 写入 → 回读）期间锁到底，步骤之间不把按钮放回去 */
+let busyDepth = 0;
 function setBusy(b) {
-  state.busy = b;
-  document.querySelectorAll(".btn").forEach((el) => (el.disabled = b));
-  if (!b && state.status) renderOverview(state.status);
+  busyDepth = Math.max(0, busyDepth + (b ? 1 : -1));
+  const on = busyDepth > 0;
+  if (state.busy === on) return;
+  state.busy = on;
+  document.querySelectorAll(".btn, .mtab").forEach((el) => (el.disabled = on));
+  if (on) return;
+  // 上面那句是把所有按钮强行放开，可用性真正由数据决定的几处得立刻交回给各自的渲染函数
+  if (state.status) renderOverview(state.status);
+  renderConfigOverview();
+}
+
+/* 把一串 invoke 包成一个不可打断的写入流程 */
+async function withBusy(fn) {
+  setBusy(true);
+  try {
+    return await fn();
+  } finally {
+    setBusy(false);
+  }
 }
 
 /* invoke 失败时返回唯一哨兵：void 命令成功会返回 undefined/null，不能拿假值当失败 */
@@ -129,7 +147,7 @@ async function loadTargets() {
       const miss = t.list.filter((x) => x.kind === "local" && x.needCreds);
       if (miss.length) {
         state.promptedCreds = true;
-        toast(`「${miss[0].name}」还缺控制台凭据，点它的 ✎ 补全后即可读取状态`, "info");
+        toast(`「${miss[0].name}」还缺控制台凭据，选中它后点底部「编辑设备连接」补全，之后才能读到状态`, "info");
       }
       if (!t.list.length) toast("还没有任何设备，点标签行的「＋ 新建设备」", "info");
     }
@@ -146,18 +164,20 @@ function tabsHtml() {
       const dot = isActive ? (state.status && state.status.running ? "run" : "off") : "";
       const glyph = OS_GLYPH[x.os] || "";
       return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-id="${esc(x.id)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}${x.kind === "local" ? " · " + esc(x.id) : ""}">
-        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span><span class="tt-edit" data-edit="${esc(x.id)}" title="编辑该设备">${ICO_EDIT}</span>
+        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>
       </div>`;
     })
     .join("") + add;
 }
 
 async function switchTarget(kind, id) {
-  const note = await call("set_target", { kind, id });
-  if (!okv(note)) return false;
-  toast(note);
-  await afterTargetChange();
-  return true;
+  return withBusy(async () => {
+    const note = await call("set_target", { kind, id });
+    if (!okv(note)) return false;
+    toast(note, String(note).includes("不可达") ? "info" : "ok");
+    await afterTargetChange();
+    return true;
+  });
 }
 
 async function afterTargetChange() {
@@ -171,16 +191,15 @@ async function afterTargetChange() {
 
 function bindTabs(el) {
   el.querySelectorAll(".ttab[data-id]").forEach((tab) => {
-    tab.addEventListener("click", (e) => {
-      if (e.target.closest(".tt-edit")) return;
+    tab.addEventListener("click", () => {
       const { kind, id } = tab.dataset;
       if (id === state.targets.activeId) return;
+      // 设备 tab 是 div，吃不到 setBusy 的 disabled，写入过程中先挡一下
+      if (state.busy) {
+        toast("上一步还没结束，稍等再切设备", "info");
+        return;
+      }
       switchTarget(kind, id);
-    });
-    const pen = tab.querySelector(".tt-edit");
-    if (pen) pen.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openDeviceModal(pen.dataset.edit);
     });
   });
   el.querySelectorAll(".tt-add").forEach((tab) => tab.addEventListener("click", () => openDeviceModal("")));
@@ -214,7 +233,7 @@ function applyMode() {
 function openDeviceModal(id) {
   const x = id ? state.targets.list.find((y) => y.id === id) : null;
   state.dev = { kind: x ? x.kind : "remote", editing: x ? x.id : "" };
-  $("dv-title").textContent = x ? `编辑设备 · ${x.name}` : "新建设备";
+  $("dv-title").textContent = x ? `编辑设备连接 · ${x.name}` : "新建设备";
   $("d-name").value = x ? x.name : "";
   $("d-host").value = x ? x.host : "";
   $("d-port").value = x ? String(x.port || "") : "";
@@ -514,12 +533,14 @@ async function deleteProxy(name) {
     "删除"
   );
   if (!ok) return;
-  const res = await call("remove_proxy_cmd", { name });
-  if (!okv(res)) return;
-  await loadConfig();
-  if (!live) setDirty(true);
-  await refreshStatus();
-  toast(typeof res === "string" ? res : `已移除「${name}」`, "info");
+  await withBusy(async () => {
+    const res = await call("remove_proxy_cmd", { name });
+    if (!okv(res)) return;
+    await loadConfig();
+    if (!live) setDirty(true);
+    await refreshStatus();
+    toast(typeof res === "string" ? res : `已移除「${name}」`, "info");
+  });
 }
 
 $("search").addEventListener("input", (e) => {
@@ -529,13 +550,15 @@ $("search").addEventListener("input", (e) => {
 
 /* ---------- 隧道页：整篇暂存配置生效 ---------- */
 async function applyStaged(withRestart) {
-  const note = await call("apply_staged_cmd", { withRestart });
-  if (!okv(note)) return;
-  toast(note);
-  setDirty(false);
-  clearStale();
-  await loadConfig();
-  await refreshStatus();
+  await withBusy(async () => {
+    const note = await call("apply_staged_cmd", { withRestart });
+    if (!okv(note)) return;
+    toast(note);
+    setDirty(false);
+    clearStale();
+    await loadConfig();
+    await refreshStatus();
+  });
 }
 
 document.querySelectorAll(".js-apply").forEach((b) =>
@@ -589,23 +612,48 @@ async function loadConfig() {
   }
 }
 
+/* tab 行下方：设备当前跑成什么样。连接参数与配置内容在下面两栏，这里只放运行时事实 */
+function statusStrip(t, s) {
+  if (!t) return `<span class="faint">还没有设备，点标签行的「＋ 新建设备」</span>`;
+  const badges = [
+    t.kind === "local"
+      ? t.managed
+        ? '<span class="badge mgd">本机 · 托管</span>'
+        : '<span class="badge ro">本机 · 只读</span>'
+      : '<span class="badge ro">远端</span>',
+    s
+      ? s.running
+        ? '<span class="badge run">● frpc 运行中</span>'
+        : s.apiReachable
+          ? '<span class="badge warn">● 控制台可达 · 进程未识别</span>'
+          : '<span class="badge stop">● frpc 不可达</span>'
+      : '<span class="badge stop">● 状态读取失败</span>',
+    t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : "",
+  ].join("");
+  const cell = (k, v) => (v ? `<div class="st-cell"><span class="st-k">${k}</span><span class="st-v">${esc(String(v))}</span></div>` : "");
+  const rp = (s && s.proxies) || [];
+  const bad = rp.filter((p) => p.status !== "running");
+  const stats = s && s.procStats;
+  const live = !!s && s.apiReachable;
+  const tunnelNote = live
+    ? `${s.runningCount} / ${s.proxyCount} 运行中` + (bad.length ? ` · ${bad.length} 条异常` : "")
+    : "";
+  return `<div class="st-badges">${badges}</div>
+    <div class="st-cells">
+      ${cell("隧道", tunnelNote)}
+      ${cell("管理 API", s ? (live ? "可达" : "不可达") : "—")}
+      ${cell("进程", s && s.pid ? `PID ${s.pid}` : t.kind === "local" && t.pid ? `PID ${t.pid}` : "")}
+      ${stats ? cell("占用", `${stats.rssMb}MB · CPU ${stats.cpuPct}% · 运行 ${stats.etime}`) : ""}
+      ${live ? cell("生效方式", state.storeMode ? "store · 改动实时生效" : "配置文件 · 保存后生效") : ""}
+    </div>`;
+}
+
 function renderConfigOverview() {
   const t = activeTarget();
   const s = state.status;
   const b = state.cfg.basics || {};
   const px = state.cfg.proxies || [];
-  $("ov-name").textContent = t ? t.name : "未选择设备";
-  $("ov-badges").innerHTML = t
-    ? [
-        t.kind === "local"
-          ? t.managed
-            ? '<span class="badge mgd">本机 · 托管</span>'
-            : '<span class="badge ro">本机 · 只读</span>'
-          : '<span class="badge ro">远端</span>',
-        s ? (s.running ? '<span class="badge run">● frpc 运行中</span>' : '<span class="badge stop">● frpc 不可达</span>') : "",
-        t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : "",
-      ].join("")
-    : "";
+  $("ov-status").innerHTML = statusStrip(t, s);
   $("i-ep").textContent = t ? `${t.host}:${t.port}` : "—";
   $("i-ep-user").textContent = t ? t.user || "（未填凭据）" : "—";
   $("i-ep-run").textContent = t
@@ -617,19 +665,35 @@ function renderConfigOverview() {
           : "未运行，且不由本 App 监督"
       : "进程控制需在目标机上进行"
     : "—";
-  $("i-srv").textContent = b.serverAddr ? `${b.serverAddr}:${b.serverPort || ""}` : "未读取到配置";
-  $("i-web-cfg").textContent = b.webAddr
-    ? `${b.webAddr}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
-    : "配置里没有 webServer";
+  const hasCfg = !!state.cfg.raw;
+  $("i-srv").textContent = b.serverAddr
+    ? `${b.serverAddr}:${b.serverPort || ""}`
+    : hasCfg
+      ? "配置里没有 serverAddr"
+      : "未读取到配置";
+  $("i-web-cfg").textContent = b.webAddr || b.webPort
+    ? `${b.webAddr || "127.0.0.1"}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
+    : hasCfg
+      ? "配置里没有 webServer"
+      : "未读取到配置";
   const storeN = px.filter((p) => p.source === "store").length;
-  $("i-tc").textContent =
-    `${px.length} 条` + (storeN ? ` · ${storeN} 条在 store，${px.length - storeN} 条在配置文件` : " · 全部在配置文件里");
+  $("i-tc").textContent = hasCfg
+    ? `${px.length} 条` + (storeN ? ` · ${storeN} 条在 store，${px.length - storeN} 条在配置文件` : " · 全部在配置文件里")
+    : "未读取到配置";
   $("i-cfg").textContent =
     (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
   $("i-saved").textContent = (s && s.savedAt) || "—";
-  const canEdit = !!t && !!(state.cfg.raw ?? "");
-  $("btn-edit-server").disabled = !canEdit || state.busy;
   $("btn-edit-device").disabled = !t || state.busy;
+  const edit = $("btn-edit-server");
+  edit.disabled = !t || !hasCfg || state.busy;
+  edit.title = !hasCfg
+    ? "读不到这台设备的配置：设备可能不在线，或地址与凭据不对。可点左侧「编辑设备连接」核对"
+    : "改这台 frpc 自己的配置（服务端、控制台绑定、隧道）";
+  $("ov-foot-note").textContent = hasCfg
+    ? ""
+    : t && t.kind === "remote"
+      ? "这台设备连不上，读不到它的配置；改完「编辑设备连接」后重新点它的标签"
+      : "";
   renderDrift();
 }
 
@@ -661,7 +725,7 @@ async function openServerModal() {
   srvFillFields(state.cfg.basics || {});
   $("c-raw").value = state.srv.raw;
   const t = activeTarget();
-  $("srv-title").textContent = `编辑该台服务器的设置 · ${t ? t.name : ""}`;
+  $("srv-title").textContent = `编辑设备配置 · ${t ? t.name : ""}`;
   styleSrvTabs();
   styleSrvFoot();
   $("server-mask").classList.remove("hidden");
@@ -704,19 +768,21 @@ function setSrvDirty(v) {
 async function switchSrvTab(to) {
   if (to === state.srv.tab) return;
   // 切换前先把两边对齐；对不齐就把人留在原页签改，避免出现两个互相矛盾的草稿
-  if (to === "raw") {
-    const raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
-    if (!okv(raw)) return;
-    state.srv.raw = raw;
-    $("c-raw").value = raw;
-  } else {
-    const b = await call("parse_raw_cmd", { raw: $("c-raw").value });
-    if (!okv(b)) return;
-    state.srv.raw = $("c-raw").value;
-    srvFillFields(b);
-  }
-  state.srv.tab = to;
-  styleSrvTabs();
+  await withBusy(async () => {
+    if (to === "raw") {
+      const raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
+      if (!okv(raw)) return;
+      state.srv.raw = raw;
+      $("c-raw").value = raw;
+    } else {
+      const b = await call("parse_raw_cmd", { raw: $("c-raw").value });
+      if (!okv(b)) return;
+      state.srv.raw = $("c-raw").value;
+      srvFillFields(b);
+    }
+    state.srv.tab = to;
+    styleSrvTabs();
+  });
 }
 
 document.querySelectorAll("#srv-tabs .mtab").forEach((b) =>
@@ -728,25 +794,37 @@ document.querySelectorAll("#srv-tabs .mtab").forEach((b) =>
 $("c-raw").addEventListener("input", () => setSrvDirty(true));
 
 async function saveServer(withRestart) {
-  let raw = $("c-raw").value;
-  if (state.srv.tab === "ui") {
-    raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
-    if (!okv(raw)) return;
+  const t = activeTarget();
+  // 远端的「保存并热加载」不动进程；只有本机重启会短暂断流，需要确认
+  if (withRestart && (!t || t.kind === "local")) {
+    const ok = await showConfirm(
+      "保存并重启 frpc？",
+      "写入配置并重启会短暂中断这台设备上的所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
+      "确认重启"
+    );
+    if (!ok) return;
   }
-  const note = await call("save_raw_cmd", { raw, withRestart });
-  if (!okv(note)) return;
-  toast(note);
-  setSrvDirty(false);
-  // 整篇落盘，暂存区里等着的隧道改动也一并生效了
-  setDirty(false);
-  clearStale();
-  await loadConfig();
-  await refreshStatus();
-  // 弹窗留在原地，内容换成目标上真正生效的那份
-  state.srv.raw = state.cfg.raw || "";
-  $("c-raw").value = state.srv.raw;
-  srvFillFields(state.cfg.basics || {});
-  styleSrvFoot();
+  await withBusy(async () => {
+    let raw = $("c-raw").value;
+    if (state.srv.tab === "ui") {
+      raw = await call("render_raw_cmd", { basics: srvFields(), base: state.srv.raw });
+      if (!okv(raw)) return;
+    }
+    const note = await call("save_raw_cmd", { raw, withRestart });
+    if (!okv(note)) return;
+    toast(note);
+    setSrvDirty(false);
+    // 整篇落盘，暂存区里等着的隧道改动也一并生效了
+    setDirty(false);
+    clearStale();
+    await loadConfig();
+    await refreshStatus();
+    // 弹窗留在原地，内容换成目标上真正生效的那份
+    state.srv.raw = state.cfg.raw || "";
+    $("c-raw").value = state.srv.raw;
+    srvFillFields(state.cfg.basics || {});
+    styleSrvFoot();
+  });
 }
 
 async function reloadSrvDraft() {
@@ -859,26 +937,29 @@ $("btn-add").addEventListener("click", async () => {
   }
   const editing = state.editing;
   const live = editing ? isLiveEntry(editing) : state.storeMode;
-  const res = editing
-    ? await call("update_proxy_cmd", { original: editing, np })
-    : await call("add_proxy_cmd", { np });
-  if (!okv(res)) return;
-  closeAddProxy();
-  await loadConfig();
-  if (!live) setDirty(true);
-  await refreshStatus();
-  toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点右上角的保存按钮写入目标");
+  await withBusy(async () => {
+    const res = editing
+      ? await call("update_proxy_cmd", { original: editing, np })
+      : await call("add_proxy_cmd", { np });
+    if (!okv(res)) return;
+    closeAddProxy();
+    await loadConfig();
+    if (!live) setDirty(true);
+    await refreshStatus();
+    toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点右上角的保存按钮写入目标");
+  });
 });
 
 /* ---------- process ---------- */
 async function proc(action) {
-  const note = await call("proc_cmd", { action });
-  if (okv(note)) {
+  await withBusy(async () => {
+    const note = await call("proc_cmd", { action });
+    if (!okv(note)) return;
     toast(note);
     await loadTargets();
     await refreshStatus();
     applyMode();
-  }
+  });
 }
 $("btn-start").addEventListener("click", () => proc("start"));
 $("btn-restart").addEventListener("click", async () => {

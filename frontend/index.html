@@ -79,40 +79,31 @@
     <!-- ============ 配置预览 ============ -->
     <section id="page-config" class="page scroll">
       <div id="ctabs" class="ttabs ctabs"></div>
-      <div class="card">
-        <div class="ov-head">
-          <div class="ov-title" id="ov-name">未选择设备</div>
-          <span class="flex1"></span>
-          <span id="ov-badges"></span>
+      <div id="ov-status" class="ov-status"></div>
+      <div id="conn-drift" class="drift hidden"></div>
+      <div class="ov-grid">
+        <div class="ov-sec">
+          <div class="card-title">这台设备的连接方式</div>
+          <div class="hint">App 用哪个地址、哪个账号连上这台 frpc 的控制台 —— 只影响 App 这一侧，不会改动设备上的 frpc。</div>
+          <div class="kv" style="margin-top:8px"><span class="k">控制台</span><span id="i-ep" class="v"></span></div>
+          <div class="kv"><span class="k">账号</span><span id="i-ep-user" class="v"></span></div>
+          <div class="kv"><span class="k">进程</span><span id="i-ep-run" class="v"></span></div>
         </div>
-        <div class="ov-grid">
-          <div class="ov-sec">
-            <div class="sec-head">
-              <div class="card-title">这台设备的连接方式</div>
-              <span class="flex1"></span>
-              <button id="btn-edit-device" class="btn sm">编辑连接</button>
-            </div>
-            <div class="hint">App 用哪个地址、哪个账号连上这台 frpc 的控制台 —— 只影响 App 这一侧，不会改动设备上的 frpc。</div>
-            <div class="kv" style="margin-top:8px"><span class="k">控制台</span><span id="i-ep" class="v"></span></div>
-            <div class="kv"><span class="k">账号</span><span id="i-ep-user" class="v"></span></div>
-            <div class="kv"><span class="k">进程</span><span id="i-ep-run" class="v"></span></div>
-            <div id="conn-drift" class="drift hidden"></div>
-          </div>
-          <div class="ov-sec">
-            <div class="sec-head">
-              <div class="card-title">这台 frpc 自身的配置</div>
-            </div>
-            <div class="hint">它连哪个 frps、把控制台绑在什么地址 —— 改这里才会写到该目标的配置文件里。</div>
-            <div class="kv" style="margin-top:8px"><span class="k">frps 服务端</span><span id="i-srv" class="v"></span></div>
-            <div class="kv"><span class="k">控制台绑定</span><span id="i-web-cfg" class="v"></span></div>
-            <div class="kv"><span class="k">隧道</span><span id="i-tc" class="v"></span></div>
-            <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
-            <div class="kv"><span class="k">上次保存</span><span id="i-saved" class="v"></span></div>
-          </div>
+        <div class="ov-sec">
+          <div class="card-title">这台 frpc 自身的配置</div>
+          <div class="hint">它连哪个 frps、把控制台绑在什么地址 —— 改这里才会写到该目标的配置文件里。</div>
+          <div class="kv" style="margin-top:8px"><span class="k">frps 服务端</span><span id="i-srv" class="v"></span></div>
+          <div class="kv"><span class="k">控制台绑定</span><span id="i-web-cfg" class="v"></span></div>
+          <div class="kv"><span class="k">隧道</span><span id="i-tc" class="v"></span></div>
+          <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
+          <div class="kv"><span class="k">上次保存</span><span id="i-saved" class="v"></span></div>
         </div>
-        <div class="row right ov-foot">
-          <button id="btn-edit-server" class="btn primary lg">编辑该台服务器的设置</button>
-        </div>
+      </div>
+      <div class="row ov-foot">
+        <button id="btn-edit-device" class="btn lg" title="改 App 怎么连这台设备的控制台（地址 / 端口 / 账号），不动设备上的 frpc">编辑设备连接</button>
+        <button id="btn-edit-server" class="btn primary lg" title="改这台 frpc 自己的配置（服务端、控制台绑定、隧道）">编辑设备配置</button>
+        <span class="flex1"></span>
+        <span id="ov-foot-note" class="hint"></span>
       </div>
     </section>
 
@@ -173,11 +164,11 @@
     </div>
   </div>
 </div>
-  <!-- ============ 弹窗：编辑该台服务器的设置 ============ -->
+  <!-- ============ 弹窗：编辑设备配置（那台 frpc 自己的设置） ============ -->
   <div id="server-mask" class="mask hidden">
     <div class="modal wide">
       <div class="modal-title">
-        <span id="srv-title">编辑该台服务器的设置</span>
+        <span id="srv-title">编辑设备配置</span>
         <span class="flex1"></span>
         <button id="btn-modal-reload" class="btn sm ghost" title="丢弃弹窗里的改动，重新读取当前配置">⟳ 重新加载</button>
         <button id="btn-modal-close" class="btn icon sm" title="关闭">✕</button>
