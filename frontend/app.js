@@ -478,32 +478,32 @@ function renderSideMetrics(s) {
   const bits = [];
   if (local) {
     const ver = st && st.binVersion;
+    const L = state.latest;
+    const updatable = !!(L && ver && !versionAtLeast(ver, L.version));
+    const tip = !L
+      ? "联网查 GitHub 上的最新版"
+      : updatable
+        ? `GitHub 最新 ${esc(L.version)} · ${esc(L.at)} 检查过`
+        : `${esc(L.at)} 检查过，已是最新`;
     bits.push(
       `<div class="sm-ver"><span class="sm-k">frpc</span>`
-        + `<span class="sm-v">${ver ? esc(ver) : "版本未知"}</span>`
-        + (ver ? `<button id="btn-update" class="btn xs ghost">检查更新</button>` : "")
+        + `<span class="sm-v${updatable ? " warn" : ""}">${ver ? esc(ver) : "版本未知"}</span>`
+        + (ver ? `<button id="btn-update" class="btn xs ghost" title="${tip}">检查更新</button>` : "")
         + `</div>`
     );
+    // 只有「有新版可升」「二进制换过等重启」两条值得单独占一行，其余收进悬浮说明
     if (st && st.upgraded) {
       bits.push(`<div class="sm-note warn">磁盘上的二进制已更新，重启后才生效</div>`);
     }
-    if (state.latest) {
-      // 没读到本机版本时只报最新版，不能声称「已是最新」
-      const L = esc(state.latest.version);
-      const at = ` · ${esc(state.latest.at)}`;
-      if (!ver) bits.push(`<div class="sm-note">GitHub 最新 ${L}${at}</div>`);
-      else if (!versionAtLeast(ver, state.latest.version)) {
-        bits.push(`<div class="sm-note warn">GitHub 最新 ${L}，可更新${at}</div>`);
-      } else bits.push(`<div class="sm-note">已是最新（${L}）${at}</div>`);
+    if (updatable) {
+      bits.push(`<div class="sm-note warn">可更新到 ${esc(L.version)} · ${esc(L.at)}</div>`);
+    } else if (L && !ver) {
+      bits.push(`<div class="sm-note">GitHub 最新 ${esc(L.version)} · ${esc(L.at)}</div>`);
     }
     if (st) {
       bits.push(
-        `<div class="sm-rings">${gauge(st.memPct, "内存", `${st.rssMb}MB`, "占整机物理内存的比例")}`
-          + `${gauge(st.cpuPct, "CPU", `${st.cpuPct}%`, "100% = 跑满一个核心")}</div>`
-      );
-      bits.push(
-        `<div class="sm-note">${esc(st.name || "frpc")}${s.pid ? ` · PID ${s.pid}` : ""}`
-          + ` · 已运行 ${fmtEtime(st.etime)}</div>`
+        `<div class="sm-note" title="内存占整机 ${esc(String(st.memPct))}%；CPU 100% = 跑满一个核心">`
+          + `内存 ${esc(String(st.rssMb))}MB · CPU ${esc(String(st.cpuPct))}%</div>`
       );
     }
   } else if (s.running) {
@@ -555,7 +555,13 @@ async function refreshStatus() {
   }
   const s = state.status;
   state.loading = false;
-  renderSideStatus(s.targetName, s.running ? "frpc 运行中" : "frpc 不可达", s.apiReachable || s.running);
+  const st = s.procStats;
+  const sub = !s.running
+    ? "frpc 不可达"
+    : s.mode === "local" && st && st.etime
+      ? `frpc 运行中 · ${fmtEtime(st.etime)}`
+      : "frpc 运行中";
+  renderSideStatus(s.targetName, sub, s.apiReachable || s.running);
   renderSideMetrics(s);
   renderTargetTabs();
   renderTunnels();
@@ -760,23 +766,6 @@ function fmtEtime(e) {
   return `${sec} 秒`;
 }
 
-/* 用量环：环心是百分比，80% 起转黄、90% 起转红 */
-function gauge(pct, label, detail, tip) {
-  const p = Math.max(0, Math.min(100, Number(pct) || 0));
-  const tone = p >= 90 ? "bad" : p >= 80 ? "warn" : "mid";
-  const r = 13;
-  const c = 2 * Math.PI * r;
-  const n = p >= 10 ? Math.round(p) : p >= 1 ? Math.round(p * 10) / 10 : Math.round(p * 100) / 100;
-  return `<div class="gauge ${tone}"${tip ? ` title="${esc(tip)}"` : ""}>
-    <svg width="34" height="34" viewBox="0 0 32 32" aria-hidden="true">
-      <circle class="ring-bg" cx="16" cy="16" r="${r}" />
-      <circle class="ring-fg" cx="16" cy="16" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - p / 100)).toFixed(1)}" />
-      <text class="ring-t" x="16" y="16">${n}</text>
-    </svg>
-    <div class="st-cell"><span class="st-k">${esc(label)}</span><span class="st-v">${esc(String(detail))}</span></div>
-  </div>`;
-}
-
 function statusStrip(t, s) {
   if (!t) return `<span class="faint">还没有设备，点标签行的「＋ 新建设备」</span>`;
   const local = t.kind === "local";
@@ -813,7 +802,9 @@ function renderConfigOverview() {
   $("i-ep-run").textContent = t
     ? t.kind === "local"
       ? t.pid
-        ? `PID ${t.pid}${t.managed ? " · LaunchAgent 监督" : " · 非本 App 启动"}`
+        ? t.managed
+          ? "运行中 · LaunchAgent 监督"
+          : "运行中 · 非本 App 启动"
         : t.managed
           ? "未运行 · 可由本 App 启动"
           : "未运行 · 不由本 App 监督"

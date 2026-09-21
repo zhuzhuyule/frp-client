@@ -110,14 +110,9 @@ body {
 .sm-ver { display: flex; align-items: center; gap: 6px; }
 .sm-k { color: var(--side-faint); }
 .sm-v { color: #d7e0ef; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sm-v.warn { color: #fbbf24; }
 .sm-note { color: var(--side-faint); line-height: 1.45; }
 .sm-note.warn { color: #fbbf24; }
-.sm-rings { display: flex; gap: 12px; }
-.sm-rings .st-k { color: var(--side-faint); }
-.sm-rings .st-v { color: #c3cede; font-size: 11px; font-weight: 500; }
-.sm-rings .ring-bg { stroke: rgba(255, 255, 255, .13); }
-.sm-rings .gauge.mid .ring-fg { stroke: #6ba0f7; }
-.sm-rings .gauge.mid .ring-t { fill: #d7e0ef; }
 .side-metrics .btn.ghost { color: #9fb0cc; }
 .side-metrics .btn.ghost:hover:not(:disabled) { background: var(--side-hover); color: #dfe8f6; }
 
@@ -383,22 +378,6 @@ body {
 .st-live { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
 .st-live.warm { color: var(--warn); }
 .st-live.off { color: var(--faint); font-weight: 500; }
-.gauge { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.gauge svg { flex: 0 0 auto; overflow: visible; }
-.ring-bg { fill: none; stroke: #e9eef6; stroke-width: 4; }
-.ring-fg {
-  fill: none; stroke-width: 4; stroke-linecap: round;
-  transform: rotate(-90deg); transform-origin: 16px 16px;
-  transition: stroke-dashoffset .35s ease, stroke .2s ease;
-}
-.ring-t {
-  font-size: 9.5px; font-weight: 700; text-anchor: middle; dominant-baseline: central;
-  font-variant-numeric: tabular-nums;
-}
-.gauge.mid .ring-fg { stroke: var(--primary); } .gauge.mid .ring-t { fill: var(--primary-deep); }
-.gauge.warn .ring-fg { stroke: var(--warn); } .gauge.warn .ring-t { fill: var(--warn); }
-.gauge.bad .ring-fg { stroke: var(--danger); } .gauge.bad .ring-t { fill: var(--danger); }
-.st-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .st-k { color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .st-v {
   color: var(--text-strong); font-size: 12.5px; font-weight: 600;
