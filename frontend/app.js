@@ -9,6 +9,8 @@ const state = {
   dirty: false,
   // stale：屏幕上有东西已经过期，需要点刷新
   stale: false,
+  // 正在取数：页面上显示的是骨架屏，不是上一台设备的旧内容
+  loading: false,
   search: "",
   status: null,
   targets: { active: "local", activeId: "", activeName: "", list: [] },
@@ -37,6 +39,10 @@ function typeCls(t) {
 }
 function typeDesc(t) {
   return t === "tcp" ? "TCP 端口映射" : t === "http" ? "HTTP 域名映射" : t === "udp" ? "UDP 转发" : "frpc 代理";
+}
+/* 类型标签：TCP / HTTP / UDP 本身已经说明是端口映射还是域名映射，行里不再重复一句描述 */
+function typeTag(t) {
+  return ({ tcp: "TCP", http: "HTTP", udp: "UDP" })[t] || String(t || "其它").toUpperCase();
 }
 function esc(s) {
   return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -154,7 +160,9 @@ function showPage(p) {
 document.querySelectorAll(".nav-item").forEach((el) =>
   el.addEventListener("click", () => showPage(el.dataset.page))
 );
-$("btn-new").addEventListener("click", openAddProxy);
+$("btn-new").addEventListener("click", () => {
+  if (!loadingGuard()) openAddProxy();
+});
 
 /* ---------- devices（设备 = App 要连的那台 frpc 控制台） ---------- */
 async function loadTargets() {
@@ -200,6 +208,7 @@ async function switchTarget(kind, id) {
 }
 
 async function afterTargetChange() {
+  showSkeletons();
   await loadTargets();
   await loadConfig();
   await refreshStatus();
@@ -218,6 +227,8 @@ function bindTabs(el) {
         toast("上一步还没结束，稍等再切设备", "info");
         return;
       }
+      // 点下去就先换骨架屏：set_target 也要一个来回，别让上一台设备的数据挂着
+      showSkeletons();
       switchTarget(kind, id);
     });
   });
@@ -408,6 +419,51 @@ $("btn-dv-rescan").addEventListener("click", async () => {
 });
 $("btn-edit-device").addEventListener("click", () => openDeviceModal(state.targets.activeId));
 
+/* ---------- 骨架屏 ----------
+   取数期间不要把上一台设备的内容留在屏上：先占位，数据回来由各自的渲染函数整片替换。 */
+function skel(w) {
+  return `<i class="sk" style="width:${w}"></i>`;
+}
+function showSkeletons() {
+  state.loading = true;
+  $("tunnel-empty").classList.add("hidden");
+  for (const id of ["chip-run", "chip-cnt"]) {
+    $(id).className = "chip sk";
+    $(id).textContent = "";
+  }
+  const one = `<div class="trow skel">
+      <div class="col-name"><span class="sk sk-ico"></span>
+        <div class="t-name">${skel("104px")}${skel("62px")}</div></div>
+      <div class="col-local t-two">${skel("88px")}${skel("56px")}</div>
+      <div class="col-remote t-two">${skel("118px")}${skel("46px")}</div>
+      <span class="col-status"><b class="sk sk-pill"></b></span>
+      <span class="col-edit"><i class="sk sk-btn"></i><i class="sk sk-btn"></i></span>
+    </div>`;
+  $("tunnel-rows").innerHTML = one.repeat(4);
+  $("ov-status").innerHTML = `<div class="st-line1">${skel("130px")}${skel("84px")}${skel("180px")}</div>`;
+  for (const id of ["i-ep", "i-ep-user", "i-ep-run", "i-srv", "i-web-cfg", "i-tc", "i-cfg", "i-saved"]) {
+    $(id).innerHTML = skel("150px");
+  }
+  $("ov-foot-note").textContent = "";
+}
+/* 骨架屏期间屏上挂的还是上一台设备的数据，别让人拿它去写当前目标 */
+function loadingGuard() {
+  if (!state.loading) return false;
+  toast("这台设备的数据还没到，稍等一下", "info");
+  return true;
+}
+
+/* 状态点：控制台连得上给绿点，连不上给红点（侧边栏导航项和底部状态行共用同一判断） */
+function renderSideStatus(name, sub, up) {
+  const el = $("side-status");
+  el.innerHTML = `<i class="ss-dot${up ? " on" : " off"}"></i>`
+    + `<div class="ss-txt"><span class="ss-name">${esc(name)}</span><span class="ss-sub">${esc(sub)}</span></div>`;
+  document.querySelectorAll(".nav-live").forEach((d) => {
+    d.classList.toggle("on", !!up);
+    d.classList.toggle("off", !up);
+  });
+}
+
 /* ---------- 侧边栏底部：本机 frpc 的运行状态、版本与用量 ---------- */
 /* frpc 的 webServer 没有任何版本端点（实测只有 status/config/reload/stop/store），
    所以版本只能问本机二进制；远端那一侧就地说明读不到，不做手填、不加新通道。 */
@@ -488,8 +544,8 @@ async function refreshStatus() {
     state.status = await invoke("get_status");
   } catch (e) {
     state.status = null;
-    $("side-status").textContent = "● 未识别到目标";
-    $("side-status").classList.add("off");
+    state.loading = false;
+    renderSideStatus("未识别到目标", "控制台没答话", false);
     $("tunnel-rows").innerHTML = "";
     renderSideMetrics(null);
     renderTargetTabs();
@@ -498,11 +554,8 @@ async function refreshStatus() {
     return;
   }
   const s = state.status;
-  const side = $("side-status");
-  side.textContent = s.running
-    ? `● ${esc(s.targetName)} · frpc 运行中${s.mode === "local" ? " · PID " + s.pid : ""}`
-    : `● ${esc(s.targetName)} · frpc 不可达`;
-  side.classList.toggle("off", !s.running);
+  state.loading = false;
+  renderSideStatus(s.targetName, s.running ? "frpc 运行中" : "frpc 不可达", s.apiReachable || s.running);
   renderSideMetrics(s);
   renderTargetTabs();
   renderTunnels();
@@ -516,7 +569,9 @@ function renderOverview(s) {
   const run = $("chip-run");
   run.textContent = s.running ? `● 运行中 · ${s.runningCount} / ${s.proxyCount} 条隧道` : "● frpc 不可达";
   run.className = "chip " + (s.running ? "ok" : "bad");
-  $("chip-cnt").textContent = `共 ${s.proxyCount} 条 · API ${s.apiReachable ? "可达" : "不可达"}`;
+  const cnt = $("chip-cnt");
+  cnt.className = "chip";
+  cnt.textContent = `共 ${s.proxyCount} 条 · API ${s.apiReachable ? "可达" : "不可达"}`;
   $("btn-start").disabled = s.running || state.busy;
   $("btn-stop").disabled = !s.running || state.busy;
 }
@@ -541,11 +596,10 @@ function remoteLines(p) {
   const doms = (p.domains || "").split(",").map((x) => x.trim()).filter(Boolean);
   const addr = (p.remoteAddr || "").trim();
   const port = (addr.match(/:(\d+)$/) || [])[1] || String(p.remotePort || "").trim();
+  // 最多两行：域名多了收进「+N 个域名」，完整列表挂在 title 上，行高不会被撑开
   if (doms.length) {
-    const lines = [doms[0]];
-    if (port) lines.push(":" + port);
-    doms.slice(1).forEach((d) => lines.push(d));
-    return lines;
+    if (doms.length > 1) return [doms[0], `+${doms.length - 1} 个域名`];
+    return port ? [doms[0], ":" + port] : [doms[0]];
   }
   if (addr) return [addr];
   return port ? [":" + port] : [];
@@ -555,11 +609,12 @@ function renderTunnels() {
   const rows = filteredProxies();
   const s = state.status;
   const hasTarget = state.targets.list.length > 0;
-  $("tunnel-empty").classList.toggle("hidden", rows.length > 0);
-  if (!hasTarget) {
-    $("tunnel-empty").classList.remove("hidden");
-    $("tunnel-empty").innerHTML = "未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端";
-  }
+  const emptyEl = $("tunnel-empty");
+  emptyEl.classList.toggle("hidden", rows.length > 0);
+  // 文案跟着当前状态走，别把上一次「没有设备」的话术留给「有设备但连不上」
+  emptyEl.textContent = hasTarget
+    ? "暂无隧道 · 管理 API 不可达或 frpc 未配置代理"
+    : "未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端";
   if (s) renderOverview(s);
   const box = $("tunnel-rows");
   box.innerHTML = rows
@@ -571,13 +626,13 @@ function renderTunnels() {
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
-          <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err err-link" : ""}" ${p.err ? 'title="点击查看日志排查"' : ""}>${p.err ? "存在错误" : esc(typeDesc(p.ptype)) + (p.source === "store" ? " · 实时" : "")}</i></div>
+          <div class="t-name"><b title="${esc(p.name)}">${esc(p.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(p.ptype))}">${esc(typeTag(p.ptype))}</i>${p.source === "store" ? '<i class="tag live" title="改动直接生效，不写配置文件">实时</i>' : ""}${p.err ? '<i class="tag err err-link" title="点击查看日志排查">存在错误</i>' : ""}</span></div>
         </div>
         <div class="col-local t-two">
           <span>${esc(p.localAddr || "—")}</span>
           ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid}">${esc(svc.name)}</i>` : ""}
         </div>
-        <div class="col-remote t-two">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
+        <div class="col-remote t-two" title="${esc((p.domains || "").trim() || (p.remoteAddr || "").trim())}">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? "运行中" : esc(p.status)}</span></span>
         <span class="col-edit">
           <button class="btn icon edit" data-name="${esc(p.name)}" title="编辑该隧道">${ICO_EDIT}</button>
@@ -644,6 +699,7 @@ async function applyStaged(withRestart) {
 
 document.querySelectorAll(".js-apply").forEach((b) =>
   b.addEventListener("click", async () => {
+    if (loadingGuard()) return;
     const remote = isRemote();
     const t = activeTarget();
     const managed = !remote && t && t.managed;
@@ -1103,6 +1159,7 @@ $("log-refresh").addEventListener("click", loadLog);
 
 /* ---------- global ---------- */
 $("btn-refresh").addEventListener("click", async () => {
+  showSkeletons();
   if (state.page === "config") await loadConfig();
   await refreshStatus();
   if (state.page === "logs") await loadLog();
@@ -1111,6 +1168,7 @@ $("btn-refresh").addEventListener("click", async () => {
 
 (async function init() {
   showPage("tunnels");
+  showSkeletons();
   await loadTargets();
   await refreshStatus();
   await loadConfig();

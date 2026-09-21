@@ -86,11 +86,23 @@ body {
 .nav-item.active .nav-glyph { background: rgba(255, 255, 255, 0.22); color: #fff; }
 .nav-dot { display: none; position: absolute; right: 12px; width: 5px; height: 5px; border-radius: 50%; background: #cfe0ff; }
 .nav-item.active .nav-dot { display: block; }
+/* 隧道管理 / 配置预览共用的目标状态点：连得上绿、连不上红，不要求当前页才点亮 */
+.nav-live {
+  display: block; position: absolute; right: 11px; width: 7px; height: 7px; border-radius: 50%;
+  background: #5b6a85; transition: background .15s, box-shadow .15s;
+}
+.nav-live.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .18); }
+.nav-live.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .18); }
 
 .side-flex { flex: 1; }
 .side-foot { padding: 10px 6px 2px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
-.side-status { font-size: 11px; color: #4ade80; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-top: 8px; }
-.side-status.off { color: #f87171; }
+.side-status { display: flex; align-items: flex-start; gap: 8px; padding-top: 8px; font-size: 11px; }
+.ss-dot { flex: none; width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: #5b6a85; }
+.ss-dot.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .16); }
+.ss-dot.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .16); }
+.ss-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-name { color: #e6ecf5; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.ss-sub { color: var(--side-faint); font-size: 10.5px; overflow-wrap: anywhere; }
 .side-motto { font-size: 10px; color: var(--side-faint); margin-top: 4px; }
 /* 侧边栏底部：本机 frpc 的版本与用量（这些只属于本机，别处不显示） */
 .side-metrics { display: flex; flex-direction: column; gap: 5px; padding-top: 8px; font-size: 11px; }
@@ -200,6 +212,22 @@ body {
 .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .chip.bad { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 
+/* ---------- 骨架屏 ----------
+   取数期间用占位块顶掉上一台设备的内容，避免"看起来还停在那一页"。 */
+.sk {
+  display: block; min-width: 12px; height: 10px; border-radius: 5px; font-style: normal;
+  background: linear-gradient(90deg, #e7ebf2 25%, #f4f6fa 50%, #e7ebf2 75%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes sk-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+.chip.sk { display: block; width: 96px; height: 22px; border-radius: 11px; padding: 0; border-color: transparent; }
+.trow.skel { background: transparent; }
+.trow.skel:hover { background: transparent; box-shadow: none; }
+.sk-ico { width: 34px; height: 34px; min-width: 34px; border-radius: 10px; }
+.sk-pill { height: 14px; margin-top: 2px; }
+.sk-btn { width: 26px; height: 26px; border-radius: 8px; }
+
 /* overview stats */
 .stat-row { display: flex; gap: 10px; margin-bottom: 10px; }
 .stat-card { flex: 1; background: var(--bg-row); border-radius: 10px; padding: 10px 12px; }
@@ -208,9 +236,9 @@ body {
 .stat-value.ok { color: var(--ok); }
 .stat-value.bad { color: var(--danger); }
 
-.kv { display: flex; gap: 12px; padding: 4px 0; }
-.kv .k { width: 100px; flex: none; color: var(--muted); font-size: 12px; }
-.kv .v { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv { display: flex; gap: 12px; padding: 4px 0; min-height: 26px; align-items: flex-start; }
+.kv .k { width: 100px; flex: none; color: var(--muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.kv .v { flex: 1; min-width: 0; color: var(--text); font-size: 12.5px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- tunnels table ---------- */
 /* Chrome 式目标 tab：激活页与下方内容融为一体，其余被分隔线隔开 */
@@ -219,8 +247,14 @@ body {
   display: flex; align-items: flex-end; gap: 5px;
   border-bottom: 1px solid #dfe5ef;
   position: relative; z-index: 1;
+  /* 设备登记多了不让页签被压扁，改成横向滚动 */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
+.ttabs::-webkit-scrollbar { height: 6px; }
+.ttabs::-webkit-scrollbar-thumb { background: #cfd8e6; border-radius: 3px; }
+.ttabs::-webkit-scrollbar-track { background: transparent; }
 .ttab {
+  flex: none;
   display: inline-flex; align-items: center; gap: 8px;
   max-width: 220px; height: 33px; padding: 0 14px; margin-bottom: -1px;
   border: 1px solid transparent; border-radius: 10px 10px 0 0;
@@ -255,7 +289,11 @@ body {
 }
 .thead.small { font-size: 11px; padding: 2px 8px 6px; border-bottom: none; }
 .thead > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rows { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; overflow-y: auto; flex: 1; }
+.rows { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; overflow-y: auto; flex: 1; scrollbar-width: thin; scrollbar-color: #cfd8e6 transparent; }
+.rows::-webkit-scrollbar { width: 8px; }
+.rows::-webkit-scrollbar-thumb { background: #cfd8e6; border-radius: 4px; border: 2px solid transparent; background-clip: content-box; }
+.rows::-webkit-scrollbar-thumb:hover { background: #b6c3d8; }
+.rows::-webkit-scrollbar-track { background: transparent; }
 
 .col-name { flex: 2 1 160px; min-width: 118px; display: flex; align-items: center; gap: 10px; }
 .col-local { flex: 1.5 1 130px; min-width: 96px; }
@@ -270,6 +308,8 @@ body {
 .col-edit { flex: 0 0 68px; display: flex; gap: 2px; justify-content: center; }
 
 .trow {
+  /* flex:none —— 隧道一多，.rows 会压缩行高把第二行的标签挤掉，这里锁住 */
+  flex: none;
   display: flex; align-items: center; gap: 10px;
   height: 54px; padding: 0 10px; border-radius: 10px;
   background: var(--bg-row); transition: background .15s, box-shadow .15s;
@@ -284,8 +324,18 @@ body {
 }
 .t-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .t-name b { font-size: 13px; color: var(--text-strong); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t-name i { font-style: normal; font-size: 11px; color: var(--muted); }
-.t-name i.err { color: var(--danger); }
+/* 第二行只放标签：类型本身已经说清是端口映射还是域名映射，不再各写一句说明 */
+.tags { display: flex; align-items: center; gap: 4px; overflow: hidden; }
+.tag {
+  font-style: normal; font-size: 10.5px; font-weight: 600; line-height: 16px;
+  padding: 0 6px; border-radius: 5px; white-space: nowrap;
+  background: #eef1f6; color: var(--muted);
+}
+.tag.tcp { background: var(--primary-soft); color: var(--primary-deep); }
+.tag.http { background: var(--ok-soft); color: var(--ok); }
+.tag.udp { background: #f3e8ff; color: #7e22ce; }
+.tag.live { background: var(--warn-soft); color: var(--warn); }
+.tag.err { background: var(--danger-soft); color: var(--danger); }
 
 .badge {
   display: inline-flex; align-items: center; justify-content: center;
@@ -355,8 +405,16 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .st-v.hot { color: var(--danger); }
-.ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 10px 32px; padding-top: 14px; }
-.ov-sec { min-width: 0; }
+/* 300px 下限是为了在 App 最小宽度（900）时仍然左右并排，而不是上下堆 */
+.ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding-top: 14px; }
+/* 两个区域各自成框，行高固定，所以"控制台↔frps 服务端""账号↔控制台绑定"能逐行对齐 */
+.ov-sec {
+  min-width: 0; padding: 12px 14px 10px;
+  border: 1px solid var(--border); border-radius: 12px; background: #fcfdff;
+}
+.ov-sec-h { margin-bottom: 6px; }
+/* 说明文字固定占两行，两个框的第一行数据才会对齐 */
+.ov-sec-h .hint { line-height: 15px; min-height: 30px; }
 .ov-foot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); gap: 10px; }
 .ov-foot .hint { color: var(--faint); }
 .badge.ro { background: #eef1f6; color: var(--muted); }
