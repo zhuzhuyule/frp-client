@@ -3,13 +3,15 @@
 mod backend;
 
 use backend::{
-    apply_basics, discover_locals, fetch_config, fetch_status, load_locals, load_remotes,
-    local_port_owners, parse_basics, parse_proxies, proc_stats, put_config, read_config_file,
-    remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
-    save_remotes, start, stop, tail, validate_host, wait_ready, Basics as BackendBasics, Endpoint,
-    LocalInstance, LocalSaved, NewProxy, RemoteTarget,
+    apply_basics, check_local_console_addr, discover_locals, fetch_config, fetch_status,
+    load_locals, load_remotes, local_port_owners, parse_basics, parse_proxies, probe_store,
+    proc_stats, put_config, read_config_file, remove_proxy, restart, restore_config_from_backup,
+    running_frpcs, save_config, save_locals, save_remotes, start, stop, store_add, store_delete,
+    store_proxies, store_replace, store_update, tail, validate_host, wait_ready,
+    Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyCfg, RemoteTarget,
 };
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
@@ -62,6 +64,39 @@ struct NewProxyDto {
     local_port: String,
     remote_port: String,
     domain: String,
+}
+
+impl NewProxyDto {
+    fn into_backend(self) -> Result<NewProxy, String> {
+        let local_port: i64 = self
+            .local_port
+            .trim()
+            .parse()
+            .map_err(|_| "localPort 必须是数字".to_string())?;
+        let remote_port = if self.remote_port.trim().is_empty() {
+            None
+        } else {
+            Some(
+                self.remote_port
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|_| "remotePort 必须是数字".to_string())?,
+            )
+        };
+        let domain = if self.domain.trim().is_empty() {
+            None
+        } else {
+            Some(self.domain.trim().to_string())
+        };
+        Ok(NewProxy {
+            name: self.name.trim().to_string(),
+            ptype: self.ptype,
+            local_ip: self.local_ip,
+            local_port,
+            remote_port,
+            domain,
+        })
+    }
 }
 
 fn local_instance(state: &AppState, id: &str) -> Result<LocalInstance, String> {
@@ -118,6 +153,82 @@ async fn pull_staged(state: &AppState) -> Result<String, String> {
         }
         Active::Remote(_) => blocked(move || fetch_config(&ep)).await,
     }
+}
+
+/// 当前目标的 frpc 是否开了 store（>=0.68 且配置了 store.path）。
+/// 探测失败当作不可达直接报错——这时把隧道写进 TOML 会造出同名双份。
+async fn store_capable(state: &AppState) -> Result<bool, String> {
+    let (_, ep) = active_endpoint(state)?;
+    match blocked(move || probe_store(&ep)).await {
+        Ok(v) => Ok(v),
+        Err(e) => Err(format!("探测 store 能力失败：{e}")),
+    }
+}
+
+async fn store_list(ep: &Endpoint) -> Result<Vec<ProxyCfg>, String> {
+    let e = ep.clone();
+    blocked(move || store_proxies(&e)).await
+}
+
+/// store 与配置文件条目的合并视图：同名时 store 生效（实测 frpc 就是按这个优先级跑的）
+fn merge_effective(file: Vec<ProxyCfg>, store: &[ProxyCfg]) -> Vec<(ProxyCfg, &'static str)> {
+    let in_store: HashSet<&str> = store.iter().map(|p| p.name.as_str()).collect();
+    let mut out: Vec<(ProxyCfg, &'static str)> =
+        store.iter().cloned().map(|c| (c, "store")).collect();
+    out.extend(file.into_iter().filter(|c| !in_store.contains(c.name.as_str())).map(|c| (c, "file")));
+    out.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    out
+}
+
+/// 活动目标的生效隧道定义 + 各自来源。非 store 目标退化为纯文件视图（与旧行为一致）。
+/// 这里刻意吞掉探测错误：frpc 停着的时候配置页仍要能编辑。
+async fn effective_proxies(state: &AppState) -> (Vec<(ProxyCfg, &'static str)>, bool) {
+    let staged = state.staged.lock().unwrap().clone();
+    let file = parse_proxies(&staged).unwrap_or_default();
+    let ep = match active_endpoint(state) {
+        Ok((_, ep)) => ep,
+        Err(_) => return (merge_effective(file, &[]), false),
+    };
+    let capable = store_capable(state).await.unwrap_or(false);
+    let store = if capable {
+        store_list(&ep).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    (merge_effective(file, &store), capable)
+}
+
+/// 本机实例的保存闸门：控制台地址必须是这台机器能绑的，且不能是别的目标的地址
+fn guard_local_basics(
+    state: &AppState,
+    id: &str,
+    b: &BackendBasics,
+) -> Result<(), String> {
+    check_local_console_addr(&b.web_addr).map_err(|e| format!("{e:#}"))?;
+    let port = b.web_port.trim();
+    let clash = |host: &str, p: &str| -> bool {
+        host.eq_ignore_ascii_case(b.web_addr.trim()) && !port.is_empty() && p == port
+    };
+    for r in state.remotes.lock().unwrap().iter() {
+        if clash(&r.host, &r.port.to_string()) {
+            return Err(format!(
+                "{}:{} 是远端目标「{}」的控制台地址，不能写进本机实例的配置",
+                b.web_addr, b.web_port, r.name
+            ));
+        }
+    }
+    for l in state.locals.lock().unwrap().iter() {
+        if l.id != id {
+            let (h, p) = host_port_of(&l.target.base_url);
+            if clash(&h, &p) {
+                return Err(format!(
+                    "{}:{} 是本机另一个实例「{}」的控制台地址，两个实例不能共用一个端口",
+                    b.web_addr, b.web_port, l.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn local_os() -> &'static str {
@@ -294,6 +405,7 @@ async fn add_local(
     let password = password.unwrap_or_default();
     if !addr.is_empty() {
         validate_host(&addr).map_err(|e| format!("{e:#}"))?;
+        check_local_console_addr(&addr).map_err(|e| format!("{e:#}"))?;
     }
     upsert_local_saved(&id, |s| {
         if !name.is_empty() {
@@ -333,6 +445,7 @@ async fn set_local_console(
     let port = if port.trim().is_empty() { "7400".to_string() } else { port.trim().to_string() };
     let user = user.trim().to_string();
     validate_host(&addr).map_err(|e| format!("{e:#}"))?;
+    check_local_console_addr(&addr).map_err(|e| format!("{e:#}"))?;
     if user.is_empty() {
         return Err("webServer 用户名不能为空".into());
     }
@@ -532,10 +645,10 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     .await
     .map_err(|e| e.to_string())?;
 
-    let cfgs: std::collections::HashMap<String, backend::ProxyCfg> = parse_proxies(&staged)
-        .unwrap_or_default()
+    let (effective, store_mode) = effective_proxies(&state).await;
+    let cfgs: HashMap<String, (ProxyCfg, &'static str)> = effective
         .into_iter()
-        .map(|c| (c.name.clone(), c))
+        .map(|(c, src)| (c.name.clone(), (c, src)))
         .collect();
     let mut proxies = Vec::new();
     let mut api_reachable = false;
@@ -552,8 +665,9 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
             proxies.push(serde_json::json!({
                 "name": p.name, "ptype": p.ptype, "status": p.status,
                 "err": p.err, "localAddr": p.local_addr, "remoteAddr": p.remote_addr,
-                "domains": cfg.map(|c| c.domains.clone()).unwrap_or_default(),
-                "remotePort": cfg.map(|c| c.remote_port.clone()).unwrap_or_default(),
+                "domains": cfg.map(|(c, _)| c.domains.clone()).unwrap_or_default(),
+                "remotePort": cfg.map(|(c, _)| c.remote_port.clone()).unwrap_or_default(),
+                "source": cfg.map(|(_, s)| *s).unwrap_or("file"),
                 "svc": svc.map(|s| serde_json::json!({
                     "pid": s.pid, "name": s.name, "path": s.path,
                     "rssMb": s.rss_mb, "cpuPct": s.cpu_pct,
@@ -587,6 +701,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "running": if is_local { pid.is_some() } else { api_reachable },
         "pid": pid.unwrap_or(0),
         "apiReachable": api_reachable,
+        "storeMode": store_mode,
         "proxyCount": proxies.len(),
         "runningCount": running_count,
         "proxies": proxies,
@@ -604,13 +719,14 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let staged = state.staged.lock().unwrap().clone();
-    let proxies: Vec<serde_json::Value> = parse_proxies(&staged)
-        .unwrap_or_default()
+    let (effective, store_mode) = effective_proxies(&state).await;
+    let proxies: Vec<serde_json::Value> = effective
         .into_iter()
-        .map(|c| {
+        .map(|(c, source)| {
             serde_json::json!({
                 "name": c.name, "ptype": c.ptype, "localIp": c.local_ip,
-                "localPort": c.local_port, "remotePort": c.remote_port, "domains": c.domains,
+                "localPort": c.local_port, "remotePort": c.remote_port,
+                "domains": c.domains, "source": source,
             })
         })
         .collect();
@@ -620,7 +736,7 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
             "webAddr": b.web_addr, "webPort": b.web_port, "webUser": b.web_user, "webPass": b.web_pass,
         })
     });
-    Ok(serde_json::json!({ "raw": staged, "basics": basics, "proxies": proxies }))
+    Ok(serde_json::json!({ "raw": staged, "basics": basics, "proxies": proxies, "storeMode": store_mode }))
 }
 
 #[tauri::command]
@@ -631,96 +747,88 @@ async fn reload_config(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn add_proxy_cmd(state: State<'_, AppState>, np: NewProxyDto) -> Result<(), String> {
-    let local_port: i64 = np
-        .local_port
-        .parse()
-        .map_err(|_| "localPort 必须是数字".to_string())?;
-    let remote_port = if np.remote_port.trim().is_empty() {
-        None
-    } else {
-        Some(
-            np.remote_port
-                .trim()
-                .parse::<i64>()
-                .map_err(|_| "remotePort 必须是数字".to_string())?,
-        )
-    };
-    let domain = if np.domain.trim().is_empty() {
-        None
-    } else {
-        Some(np.domain.trim().to_string())
-    };
-    let p = NewProxy {
-        name: np.name.trim().to_string(),
-        ptype: np.ptype,
-        local_ip: np.local_ip,
-        local_port,
-        remote_port,
-        domain,
-    };
+async fn add_proxy_cmd(state: State<'_, AppState>, np: NewProxyDto) -> Result<String, String> {
+    let p = np.into_backend()?;
+    let (effective, store_mode) = effective_proxies(&state).await;
+    let names: Vec<String> = effective.into_iter().map(|(c, _)| c.name).collect();
+    backend::validate_new(&p, &names).map_err(|e| format!("{e:#}"))?;
+    if store_mode {
+        let (_, ep) = active_endpoint(&state)?;
+        let ep2 = ep.clone();
+        let p2 = p.clone();
+        blocked(move || store_add(&ep2, &p2)).await?;
+        return Ok(format!("已实时新建隧道「{}」，立即生效，无需重启", p.name));
+    }
     let mut staged = state.staged.lock().unwrap();
-    let existing: Vec<String> = parse_proxies(&staged)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.name)
-        .collect();
-    backend::validate_new(&p, &existing).map_err(|e| format!("{e:#}"))?;
     *staged = backend::add_proxy(&staged, &p).map_err(|e| format!("{e:#}"))?;
-    Ok(())
+    Ok("已加入暂存列表，点「保存并生效」写入目标".to_string())
 }
 
 #[tauri::command]
-async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<(), String> {
+async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let (effective, _) = effective_proxies(&state).await;
+    let shadowed = |n: &str| {
+        effective
+            .iter()
+            .any(|(c, s)| c.name == n && *s == "file")
+    };
+    if effective
+        .iter()
+        .any(|(c, s)| c.name == name && *s == "store")
+    {
+        let (_, ep) = active_endpoint(&state)?;
+        let ep2 = ep.clone();
+        let name2 = name.clone();
+        blocked(move || store_delete(&ep2, &name2)).await?;
+        return Ok(if shadowed(&name) {
+            format!("已实时删除「{name}」；配置文件里还有同名条目，store 撤掉后它会重新生效")
+        } else {
+            format!("已实时删除隧道「{name}」")
+        });
+    }
     let mut staged = state.staged.lock().unwrap();
     *staged = remove_proxy(&staged, &name).map_err(|e| format!("{e:#}"))?;
-    Ok(())
+    Ok(format!("已从暂存配置移除「{name}」，点「保存并生效」写入目标"))
 }
 
-/// 原地编辑一条隧道（改 name / 端口 / 域名），仍只动暂存区
+/// 改一条隧道：store 条目直接改（立即生效），文件条目仍只动暂存区
 #[tauri::command]
 async fn update_proxy_cmd(
     state: State<'_, AppState>,
     original: String,
     np: NewProxyDto,
-) -> Result<(), String> {
-    let local_port: i64 = np
-        .local_port
-        .parse()
-        .map_err(|_| "localPort 必须是数字".to_string())?;
-    let remote_port = if np.remote_port.trim().is_empty() {
-        None
-    } else {
-        Some(
-            np.remote_port
-                .trim()
-                .parse::<i64>()
-                .map_err(|_| "remotePort 必须是数字".to_string())?,
-        )
-    };
-    let domain = if np.domain.trim().is_empty() {
-        None
-    } else {
-        Some(np.domain.trim().to_string())
-    };
-    let p = NewProxy {
-        name: np.name.trim().to_string(),
-        ptype: np.ptype,
-        local_ip: np.local_ip,
-        local_port,
-        remote_port,
-        domain,
-    };
-    let mut staged = state.staged.lock().unwrap();
-    let existing: Vec<String> = parse_proxies(&staged)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.name)
-        .filter(|n| n != &original)
+) -> Result<String, String> {
+    let p = np.into_backend()?;
+    let (effective, _) = effective_proxies(&state).await;
+    let names: Vec<String> = effective
+        .iter()
+        .filter(|(c, _)| c.name != original)
+        .map(|(c, _)| c.name.clone())
         .collect();
-    backend::validate_new(&p, &existing).map_err(|e| format!("{e:#}"))?;
+    backend::validate_new(&p, &names).map_err(|e| format!("{e:#}"))?;
+    let cur = effective
+        .iter()
+        .find(|(c, _)| c.name == original)
+        .cloned()
+        .ok_or_else(|| format!("未找到隧道 {original}"))?;
+    if cur.1 == "store" {
+        let (_, ep) = active_endpoint(&state)?;
+        let ep2 = ep.clone();
+        let p2 = p.clone();
+        if p.name == original {
+            blocked(move || store_update(&ep2, &p2)).await?;
+            return Ok(format!("已实时改动隧道「{original}」，立即生效"));
+        }
+        let old = cur.0;
+        blocked(move || store_replace(&ep2, &old, &p2)).await?;
+        return Ok(format!(
+            "已实时把「{original}」改名为「{}」，立即生效",
+            p.name
+        ));
+    }
+    let mut staged = state.staged.lock().unwrap();
     *staged = backend::update_proxy(&staged, &original, &p).map_err(|e| format!("{e:#}"))?;
-    Ok(())
+    Ok("已改动暂存配置，点「保存并生效」写入目标".to_string())
 }
 
 #[tauri::command]
@@ -736,6 +844,7 @@ async fn save_config_cmd(
     let (note, authoritative) = match a {
         Active::Local(id) => {
             let inst = local_instance(&state, &id)?;
+            guard_local_basics(&state, &id, &basics)?;
             if with_restart && !inst.managed {
                 return Err(
                     "该实例不由本 App 的 LaunchAgent 监督，只能保存配置，请自行重启它".to_string()
@@ -898,4 +1007,44 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_effective;
+    use crate::backend::ProxyCfg;
+
+    fn cfg(name: &str, port: &str) -> ProxyCfg {
+        ProxyCfg {
+            name: name.into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: "8080".into(),
+            remote_port: port.into(),
+            domains: String::new(),
+        }
+    }
+
+    #[test]
+    fn store_entries_shadow_same_name_file_entries() {
+        let file = vec![cfg("dup", "1000"), cfg("only-file", "1001")];
+        let store = vec![cfg("dup", "2000"), cfg("only-store", "2001")];
+        let merged = merge_effective(file, &store);
+        let view: Vec<(&str, &str)> = merged
+            .iter()
+            .map(|(c, s)| (c.name.as_str(), *s))
+            .collect();
+        // 同名只出现一次，且以 store 里的值为准（实测 frpc 就是 store 优先）
+        assert_eq!(
+            view,
+            vec![("dup", "store"), ("only-file", "file"), ("only-store", "store")]
+        );
+        assert_eq!(merged.iter().find(|(c, _)| c.name == "dup").unwrap().0.remote_port, "2000");
+        // 没有 store 的目标：合并结果必须等于原来的文件视图，行为不变
+        let plain = merge_effective(vec![cfg("a", "1")], &[]);
+        assert_eq!(
+            plain.iter().map(|(c, s)| (c.name.as_str(), *s)).collect::<Vec<_>>(),
+            vec![("a", "file")]
+        );
+    }
 }

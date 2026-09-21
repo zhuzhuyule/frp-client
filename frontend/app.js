@@ -15,6 +15,7 @@ const state = {
   expandLocal: "",
   promptedCreds: false,
   editing: null,
+  storeMode: false,
 };
 
 const PAGE_META = {
@@ -451,6 +452,7 @@ async function refreshStatus() {
     $("side-status").classList.add("off");
     $("tunnel-rows").innerHTML = "";
     $("ov-line").textContent = "";
+    $("chip-mode").textContent = "";
     renderTargetTabs();
     toast(`状态获取失败：${e}`, "err");
     return;
@@ -476,10 +478,14 @@ async function refreshStatus() {
 
 function renderOverview(s) {
   if (!s) return;
+  state.storeMode = !!s.storeMode;
   const run = $("chip-run");
   run.textContent = s.running ? "● 运行中" : "● 不可达";
   run.className = "chip " + (s.running ? "ok" : "bad");
   $("chip-cnt").textContent = `隧道 ${s.runningCount} / ${s.proxyCount} · API ${s.apiReachable ? "可达" : "不可达"}`;
+  const mode = $("chip-mode");
+  mode.textContent = state.storeMode ? "隧道实时生效（store）" : "隧道改配置文件（需保存生效）";
+  mode.className = "chip" + (state.storeMode ? " ok" : "");
   const seg = (k, v) => (v ? `${k} <b>${esc(String(v))}</b>` : "");
   const bits = [
     seg("服务端", `${s.serverAddr}:${s.serverPort}`),
@@ -543,7 +549,7 @@ function renderTunnels() {
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
-          <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err" : ""}">${p.err ? "存在错误" : esc(typeDesc(p.ptype))}</i></div>
+          <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err" : ""}">${p.err ? "存在错误" : esc(typeDesc(p.ptype)) + (p.source === "store" ? " · 实时" : "")}</i></div>
         </div>
         <div class="col-local t-two">
           <span>${esc(p.localAddr || "—")}</span>
@@ -578,13 +584,21 @@ function renderTunnels() {
 }
 
 async function deleteProxy(name) {
-  const ok = await showConfirm("删除隧道？", `将从当前目标的配置中移除「${name}」，点「保存并生效」后落地。`, "删除");
+  const live = isLiveEntry(name);
+  const ok = await showConfirm(
+    "删除隧道？",
+    live
+      ? `将立即从当前 frpc 中移除「${name}」并停止这条映射，无需重启。`
+      : `将从暂存配置中移除「${name}」，点「保存并生效」后落地。`,
+    "删除"
+  );
   if (!ok) return;
   const res = await call("remove_proxy_cmd", { name });
   if (!okv(res)) return;
   await loadConfig();
-  setDirty(true);
-  toast(`已移除「${name}」，点「保存并生效」写入目标`, "info");
+  if (!live) setDirty(true);
+  await refreshStatus();
+  toast(typeof res === "string" ? res : `已移除「${name}」`, "info");
 }
 
 $("search").addEventListener("input", (e) => {
@@ -662,6 +676,7 @@ async function loadConfig() {
   const cfg = await call("get_config");
   if (okv(cfg)) {
     state.cfg = cfg;
+    if (typeof cfg.storeMode === "boolean") state.storeMode = cfg.storeMode;
     renderConfig();
   }
 }
@@ -684,7 +699,9 @@ function renderConfigMeta() {
   const s = state.status;
   const t = activeTarget();
   $("i-target").textContent = t ? `${t.name}（${t.kind === "local" ? (t.managed ? "本机 · 托管" : "本机 · 只读") : "远端"}）` : "—";
-  $("i-tc").textContent = `${state.cfg.proxies.length} 条`;
+  const storeN = state.cfg.proxies.filter((p) => p.source === "store").length;
+  $("i-tc").textContent =
+    `${state.cfg.proxies.length} 条` + (storeN ? `（${storeN} 条在 store，改动立即生效）` : "");
   $("i-web").textContent = s ? s.webUrl : t ? `${t.host}:${t.port}` : "—";
   $("i-cfg").textContent = (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
   $("i-saved").textContent = (s && s.savedAt) || "—";
@@ -712,8 +729,10 @@ $("btn-reload").addEventListener("click", async () => {
 function openAddProxy() {
   state.editing = null;
   $("proxy-title").textContent = "新建隧道";
-  $("btn-add").textContent = "加入暂存";
-  $("proxy-hint").textContent = "加入暂存列表后仍需点「保存并生效」写入当前目标";
+  $("btn-add").textContent = state.storeMode ? "立即创建" : "加入暂存";
+  $("proxy-hint").textContent = state.storeMode
+    ? "该目标开了 store，新建后立即生效，无需重启"
+    : "加入暂存列表后仍需点「保存并生效」写入当前目标";
   ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
@@ -721,16 +740,26 @@ function openAddProxy() {
   $("n-name").focus();
 }
 
+/* store 里的条目改动立即生效；配置文件里的条目仍要走「保存并生效」 */
+function isLiveEntry(name) {
+  if (!state.storeMode) return false;
+  const c = state.cfg.proxies.find((x) => x.name === name);
+  return !!c && c.source === "store";
+}
+
 function openEditProxy(name) {
   const c = state.cfg.proxies.find((x) => x.name === name);
   if (!c) {
-    toast("未在暂存配置中找到该隧道", "err");
+    toast("未在当前目标里找到该隧道", "err");
     return;
   }
+  const live = isLiveEntry(name);
   state.editing = name;
   $("proxy-title").textContent = `编辑隧道 · ${name}`;
-  $("btn-add").textContent = "保存改动";
-  $("proxy-hint").textContent = "改动写入暂存后仍需点「保存并生效」落地到当前目标";
+  $("btn-add").textContent = live ? "立即保存" : "保存改动";
+  $("proxy-hint").textContent = live
+    ? "这条隧道存在 frpc 的 store 里，保存后立即生效，无需重启"
+    : "改动写入暂存后仍需点「保存并生效」落地到当前目标";
   $("n-name").value = c.name;
   $("n-type").value = ["tcp", "http", "udp"].includes(c.ptype) ? c.ptype : "tcp";
   $("n-local-ip").value = c.localIp || "127.0.0.1";
@@ -764,14 +793,16 @@ $("btn-add").addEventListener("click", async () => {
     return;
   }
   const editing = state.editing;
+  const live = editing ? isLiveEntry(editing) : state.storeMode;
   const res = editing
     ? await call("update_proxy_cmd", { original: editing, np })
     : await call("add_proxy_cmd", { np });
   if (!okv(res)) return;
-  await loadConfig();
-  setDirty(true);
   closeAddProxy();
-  toast(editing ? `已改动「${np.name}」，点「保存并生效」写入目标` : "已加入暂存列表，点「保存并生效」写入目标");
+  await loadConfig();
+  if (!live) setDirty(true);
+  await refreshStatus();
+  toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点「保存并生效」写入目标");
 });
 $("btn-raw").addEventListener("click", () => {
   state.showRaw = !state.showRaw;

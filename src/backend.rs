@@ -126,6 +126,26 @@ pub fn local_console_addr(configured: &str) -> String {
     }
 }
 
+/// 本机实例的 webServer.addr 只允许写这台机器能绑定的地址。
+/// 曾经把另一台机器的控制台地址写进本机配置，热加载时看不出问题（不会重新 bind），
+/// 下一次真实重启才 bind 失败，整机隧道全部下线。
+pub fn check_local_console_addr(addr: &str) -> Result<()> {
+    let a = addr.trim();
+    if a.is_empty() {
+        bail!("控制台地址不能为空，本机一般填 127.0.0.1");
+    }
+    if a == "0.0.0.0" || a == "::" {
+        bail!("控制台不能绑定 {a}：会把 frpc 的管理接口暴露给整个局域网");
+    }
+    if a.starts_with("127.") || a.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+    if local_interface_ips().iter().any(|ip| ip == a) {
+        return Ok(());
+    }
+    bail!("{a} 不是本机地址：这里要填的是这台机器上 frpc 绑定的控制台地址，本机一般用 127.0.0.1")
+}
+
 // ---------- remote targets (app-owned config) ----------
 
 pub fn app_config_path() -> PathBuf {
@@ -608,8 +628,166 @@ pub fn put_config(e: &Endpoint, toml_src: &str) -> Result<()> {
     Ok(())
 }
 
-// ---------- process control (launchd) ----------
+// ---------- store API (frpc >= 0.68 且配置了 store.path) ----------
+//
+// 实测契约（0.71.0，隔离 frps）：
+//   GET    /api/store/proxies        200 {"proxies":[..]}；未开 store 或 <0.68 一律 404 "page not found"
+//   POST   /api/store/proxies        200 立即可用（无需重启）；同名 409 conflict
+//   PUT    /api/store/proxies/{name} 200 原地更新；URL 与 body 的 name 不一致 400（不支持改名）；不存在 404
+//   DELETE /api/store/proxies/{name} 200；不存在 404
+// 响应里的代理条目会把配置嵌套在 obj[type] 下，并补齐 frpc 自己的默认字段。
 
+fn store_err(code: u16, body: &str) -> anyhow::Error {
+    let msg = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("Msg").and_then(|m| m.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| body.trim().to_string());
+    anyhow!("HTTP {code} {msg}")
+}
+
+/// store 端点统一入口；非 2xx 时把 frpc 返回的 Msg 透出来
+fn store_call(method: &str, e: &Endpoint, path: &str, body: Option<&str>) -> Result<String> {
+    let url = format!("{}{}", e.base_url, path);
+    let mut req = ureq::request(method, &url)
+        .set("Authorization", &auth_header(e))
+        .timeout(Duration::from_secs(6));
+    if let Some(b) = body {
+        req = req.set("Content-Type", "application/json");
+        match req.send_string(b) {
+            Ok(r) => return Ok(r.into_string()?),
+            Err(ureq::Error::Status(code, resp)) => return Err(store_err(code, &resp.into_string().unwrap_or_default())),
+            Err(other) => return Err(other).with_context(|| format!("{method} {url} 失败")),
+        }
+    }
+    match req.call() {
+        Ok(r) => Ok(r.into_string()?),
+        Err(ureq::Error::Status(code, resp)) => {
+            Err(store_err(code, &resp.into_string().unwrap_or_default()))
+        }
+        Err(other) => Err(other).with_context(|| format!("{method} {url} 失败")),
+    }
+}
+
+fn store_body(p: &NewProxy) -> String {
+    let mut conf = serde_json::Map::new();
+    conf.insert("localIP".into(), serde_json::json!(p.local_ip));
+    conf.insert("localPort".into(), serde_json::json!(p.local_port));
+    if let Some(rp) = p.remote_port {
+        conf.insert("remotePort".into(), serde_json::json!(rp));
+    }
+    let domains = domain_list(p.domain.as_deref().unwrap_or(""));
+    if !domains.is_empty() {
+        conf.insert("customDomains".into(), serde_json::json!(domains));
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("name".into(), serde_json::json!(p.name.as_str()));
+    root.insert("type".into(), serde_json::json!(p.ptype.as_str()));
+    root.insert(p.ptype.clone(), serde_json::Value::Object(conf));
+    serde_json::Value::Object(root).to_string()
+}
+
+/// store 能力探测：200 才算开启；404 表示这台 frpc 不支持 store（<0.68）或没配 store.path；
+/// 其余（超时 / 401 / 连接被拒）说明控制台本身有问题，交给调用方决定是报错还是回退
+pub fn probe_store(e: &Endpoint) -> Result<bool> {
+    let url = format!("{}/api/store/proxies", e.base_url);
+    match ureq::get(&url)
+        .set("Authorization", &auth_header(e))
+        .timeout(Duration::from_secs(4))
+        .call()
+    {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(other) => Err(anyhow::Error::new(other).context(format!("GET {url} 失败"))),
+    }
+}
+
+/// store 里的代理条目；Err 表示这台 frpc 没有 store 能力（或不可达）
+pub fn store_proxies(e: &Endpoint) -> Result<Vec<ProxyCfg>> {
+    let text = store_call("GET", e, "/api/store/proxies", None)?;
+    let val: serde_json::Value =
+        serde_json::from_str(&text).context("/api/store/proxies 返回的不是合法 JSON")?;
+    let arr = val
+        .get("proxies")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for item in arr {
+        let ptype = field_str(&item, "type");
+        let conf = item.get(&ptype).cloned().unwrap_or(serde_json::Value::Null);
+        let num = |k: &str| -> String {
+            conf.get(k)
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default()
+        };
+        let domains = conf
+            .get("customDomains")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        let local_ip = match conf.get("localIP") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        out.push(ProxyCfg {
+            name: field_str(&item, "name"),
+            ptype,
+            local_ip: if local_ip.is_empty() { "127.0.0.1".into() } else { local_ip },
+            local_port: num("localPort"),
+            remote_port: num("remotePort"),
+            domains,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+pub fn store_add(e: &Endpoint, p: &NewProxy) -> Result<()> {
+    store_call("POST", e, "/api/store/proxies", Some(&store_body(p)))?;
+    Ok(())
+}
+
+/// 原地更新（同名）。改名要走 store_replace。
+pub fn store_update(e: &Endpoint, p: &NewProxy) -> Result<()> {
+    let path = format!("/api/store/proxies/{}", p.name);
+    store_call("PUT", e, &path, Some(&store_body(p)))?;
+    Ok(())
+}
+
+pub fn store_delete(e: &Endpoint, name: &str) -> Result<()> {
+    store_call("DELETE", e, &format!("/api/store/proxies/{name}"), None)?;
+    Ok(())
+}
+
+/// 改名 = 先删旧的再建新的；建新失败时把旧条目原样放回，避免隧道凭空消失
+pub fn store_replace(e: &Endpoint, original: &ProxyCfg, p: &NewProxy) -> Result<()> {
+    let old = original.to_new_proxy()?;
+    store_delete(e, &original.name)?;
+    match store_add(e, p) {
+        Ok(()) => Ok(()),
+        Err(new_err) => {
+            // 回滚：恢复原条目，原错误一并报出
+            let name = original.name.clone();
+            match store_add(e, &old) {
+                Ok(()) => bail!("{new_err}（原隧道 {name} 已还原）"),
+                Err(rb) => bail!(
+                    "{new_err}，且还原 {name} 也失败：{rb}，请手动检查该目标的隧道列表"
+                ),
+            }
+        }
+    }
+}
+
+// ---------- process control (launchd) ----------
 pub fn frpc_pids() -> Vec<u32> {
     let Ok(out) = std::process::Command::new("pgrep").arg("-x").arg("frpc").output() else {
         return Vec::new();
@@ -857,6 +1035,32 @@ pub struct ProxyCfg {
     pub local_port: String,
     pub remote_port: String,
     pub domains: String,
+}
+
+impl ProxyCfg {
+    /// 还原成可提交的形态（store 改名回滚时要用原条目）
+    pub fn to_new_proxy(&self) -> Result<NewProxy> {
+        let n = |k: &str, v: &str| -> Result<i64> {
+            v.trim().parse::<i64>()
+                .with_context(|| format!("隧道 {} 的 {k} 无法当作端口：{v}", self.name))
+        };
+        Ok(NewProxy {
+            name: self.name.clone(),
+            ptype: self.ptype.clone(),
+            local_ip: self.local_ip.clone(),
+            local_port: n("localPort", &self.local_port)?,
+            remote_port: if self.remote_port.trim().is_empty() {
+                None
+            } else {
+                Some(n("remotePort", &self.remote_port)?)
+            },
+            domain: if self.domains.trim().is_empty() {
+                None
+            } else {
+                Some(self.domains.clone())
+            },
+        })
+    }
 }
 
 pub struct Basics {
@@ -1257,6 +1461,62 @@ remotePort = 2222
     }
 
     #[test]
+    fn store_body_matches_measured_contract() {
+        let p = NewProxy {
+            name: "web".into(),
+            ptype: "http".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 8080,
+            remote_port: None,
+            domain: Some("a.example.com, b.example.com".into()),
+        };
+        let v: serde_json::Value = serde_json::from_str(&store_body(&p)).unwrap();
+        assert_eq!(v["name"], "web");
+        assert_eq!(v["type"], "http");
+        // 类型块必须用 type 同名做 key，否则 frpc 报 exactly one proxy type block is required
+        assert_eq!(v["http"]["localPort"], 8080);
+        assert_eq!(v["http"]["customDomains"].as_array().unwrap().len(), 2);
+        assert!(v.get("remotePort").is_none());
+        let tcp: serde_json::Value = serde_json::from_str(&store_body(&NewProxy {
+            ptype: "tcp".into(),
+            remote_port: Some(19092),
+            domain: None,
+            ..p
+        }))
+        .unwrap();
+        assert_eq!(tcp["tcp"]["remotePort"], 19092);
+        assert!(tcp["tcp"].get("customDomains").is_none());
+    }
+
+    #[test]
+    fn proxy_cfg_to_new_proxy_roundtrip() {
+        let cfg = ProxyCfg {
+            name: "web".into(),
+            ptype: "http".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: "8080".into(),
+            remote_port: String::new(),
+            domains: "a.example.com".into(),
+        };
+        let p = cfg.to_new_proxy().unwrap();
+        assert_eq!((p.local_port, p.remote_port), (8080, None));
+        assert_eq!(p.domain.as_deref(), Some("a.example.com"));
+        let bad = ProxyCfg { local_port: "http".into(), ..cfg };
+        assert!(bad.to_new_proxy().is_err());
+    }
+
+    #[test]
+    fn local_console_addr_must_be_bindable() {
+        assert!(check_local_console_addr("127.0.0.1").is_ok());
+        assert!(check_local_console_addr("localhost").is_ok());
+        // 这两个都会让 frpc 重启时要么全机下线要么暴露管理接口
+        assert!(check_local_console_addr("0.0.0.0").is_err());
+        assert!(check_local_console_addr("").is_err());
+        // 另一台机器的 IP：热加载不报错，下次真实重启才 bind 失败
+        assert!(check_local_console_addr("203.0.113.9").is_err());
+    }
+
+    #[test]
     fn apply_basics_updates_in_place() {
         let b = Basics {
             server_addr: "9.9.9.9".into(),
@@ -1420,6 +1680,64 @@ remotePort = 2222
             Some(PathBuf::from("/z.toml"))
         );
         assert_eq!(config_path_from_args("frpc check"), None);
+    }
+
+    #[test]
+    #[ignore = "需要一个开了 store.path 的 frpc 实例（默认 127.0.0.1:17499），会真的增删隧道"]
+    fn live_store_crud() {
+        let e = Endpoint {
+            base_url: env_or("FRPC_STORE_TEST_BASE", "http://127.0.0.1:17499"),
+            user: env_or("FRPC_STORE_TEST_USER", "probe"),
+            password: env_or("FRPC_STORE_TEST_PASS", "probe"),
+        };
+        let port_of = |name: &str| -> Option<String> {
+            store_proxies(&e)
+                .ok()
+                .and_then(|l| l.into_iter().find(|c| c.name == name).map(|c| c.remote_port))
+        };
+        let a = "zz-store-a";
+        let b = "zz-store-b";
+        let _ = store_delete(&e, a);
+        let _ = store_delete(&e, b);
+        assert!(probe_store(&e).unwrap(), "该实例应已开启 store");
+
+        let np = NewProxy {
+            name: a.into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 8001,
+            remote_port: Some(18011),
+            domain: None,
+        };
+        store_add(&e, &np).unwrap();
+        let got = store_proxies(&e)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == a)
+            .expect("新建后应能读回");
+        assert_eq!(got.ptype, "tcp");
+        assert_eq!((got.local_port.as_str(), got.remote_port.as_str()), ("8001", "18011"));
+        assert_eq!(port_of(a).as_deref(), Some("18011"));
+        // 同名新建必须被拒（0.70 起 frpc 也不允许重名）
+        assert!(store_add(&e, &np).is_err());
+
+        store_update(&e, &NewProxy { remote_port: Some(18012), ..np.clone() }).unwrap();
+        assert_eq!(port_of(a).as_deref(), Some("18012"));
+        // URL 与 body 名字不一致会被拒，所以改名只能删旧建新
+        assert!(store_update(&e, &NewProxy { name: b.into(), ..np.clone() }).is_err());
+        let cur = store_proxies(&e).unwrap().into_iter().find(|c| c.name == a).unwrap();
+        store_replace(&e, &cur, &NewProxy { name: b.into(), ..np.clone() }).unwrap();
+        assert_eq!(port_of(a), None);
+        assert_eq!(port_of(b).as_deref(), Some("18011"));
+
+        store_delete(&e, b).unwrap();
+        assert_eq!(port_of(b), None);
+        assert!(store_delete(&e, b).is_err());
+
+        // 没配 store.path 的 0.71 / 更早版本：探测必须是 false，走原来的文件编辑路径
+        let off = Endpoint { base_url: env_or("FRPC_NOSTORE_TEST_BASE", "http://127.0.0.1:17498"), ..e };
+        assert!(!probe_store(&off).unwrap());
+        assert!(store_proxies(&off).is_err());
     }
 
     #[test]
