@@ -571,6 +571,27 @@ fn auth_header(e: &Endpoint) -> String {
     format!("Basic {creds}")
 }
 
+/// 探一台设备的控制台是否连通：`None` = 连不上（含 401，等于我们读不到它的状态），
+/// `Some(n)` = 连通，n 是不在 running 或带 err 的隧道数。
+/// 页签上每时每刻要给所有设备上色，所以这里必须比 fetch_status 更快返回。
+pub fn probe_health(e: &Endpoint) -> Option<usize> {
+    let url = format!("{}/api/status", e.base_url);
+    let resp = ureq::get(&url)
+        .set("Authorization", &auth_header(e))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .ok()?;
+    let body: serde_json::Value = resp.into_json().ok()?;
+    let bad = body
+        .as_object()?
+        .values()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter(|p| field_str(p, "status") != "running" || !field_str(p, "err").is_empty())
+        .count();
+    Some(bad)
+}
+
 pub fn fetch_status(e: &Endpoint) -> Result<Vec<ProxyStatus>> {
     let url = format!("{}/api/status", e.base_url);
     let resp = ureq::get(&url)
@@ -1968,6 +1989,28 @@ remotePort = 2222
         assert!(url.starts_with("https://"));
         // 同一个路径第二次读要走缓存，不再 fork 进程
         assert_eq!(bin_version(&st.bin).as_deref(), Some(v.as_str()));
+    }
+
+    #[test]
+    #[ignore = "需要本机 frpc 正在运行；只读，不会改动配置"]
+    fn live_probe_health() {
+        let locals = discover_locals();
+        let e = locals[0].target.endpoint();
+        let bad = probe_health(&e).expect("本机控制台应能探通");
+        let real = fetch_status(&e).unwrap();
+        let expect = real
+            .iter()
+            .filter(|p| p.status != "running" || !p.err.is_empty())
+            .count();
+        println!("本机隧道 {} 条，异常 {bad} 条（fetch_status 口径 {expect}）", real.len());
+        assert_eq!(bad, expect, "探活口径要和 fetch_status 一致");
+        // 没人监听的端口必须在 2s 内返回 None，而不是挂住
+        let dead = Endpoint {
+            base_url: "http://127.0.0.1:1".into(),
+            user: String::new(),
+            password: String::new(),
+        };
+        assert!(probe_health(&dead).is_none());
     }
 
     #[test]

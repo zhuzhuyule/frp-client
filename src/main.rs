@@ -5,7 +5,8 @@ mod backend;
 use backend::{
     apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
     fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_port_owners,
-    parse_basics, parse_proxies, probe_store, proc_stats, put_config, read_config_file,
+    parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
+    read_config_file,
     remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
     save_remotes, start, stop, store_add, store_delete, store_proxies, store_replace,
     store_update, tail, validate_host, version_at_least, wait_ready,
@@ -335,6 +336,43 @@ async fn get_targets(state: State<'_, AppState>) -> Result<serde_json::Value, St
     Ok(serde_json::json!({
         "active": active_kind, "activeId": active_id, "activeName": active_name, "list": list,
     }))
+}
+
+/// 一次问完所有设备的控制台。`get_status` 只看得见当前选中的一台，
+/// 而设备页签上的点要覆盖所有设备，所以连通性得单独整批探。
+#[tauri::command]
+async fn probe_targets(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let items: Vec<(String, Endpoint)> = {
+        let mut v = Vec::new();
+        for l in state.locals.lock().unwrap().iter() {
+            v.push((l.id.clone(), l.target.endpoint()));
+        }
+        for r in state.remotes.lock().unwrap().iter() {
+            v.push((r.name.clone(), r.endpoint()));
+        }
+        v
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        // 并发探：串行的话每台离线设备都要等满 2s 超时，几台就能把一轮拖到十几秒
+        std::thread::scope(|s| {
+            let handles: Vec<_> = items
+                .into_iter()
+                .map(|(id, ep)| s.spawn(move || (id, probe_health(&ep))))
+                .collect();
+            let mut map = serde_json::Map::new();
+            for h in handles {
+                if let Ok((id, r)) = h.join() {
+                    map.insert(
+                        id,
+                        serde_json::json!({ "ok": r.is_some(), "bad": r.unwrap_or(0) }),
+                    );
+                }
+            }
+            Ok(serde_json::Value::Object(map))
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1044,6 +1082,7 @@ fn main() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_targets,
+            probe_targets,
             set_target,
             add_local,
             check_update,

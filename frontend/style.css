@@ -84,15 +84,6 @@ body {
   font-size: 12px;
 }
 .nav-item.active .nav-glyph { background: rgba(255, 255, 255, 0.22); color: #fff; }
-.nav-dot { display: none; position: absolute; right: 12px; width: 5px; height: 5px; border-radius: 50%; background: #cfe0ff; }
-.nav-item.active .nav-dot { display: block; }
-/* 隧道管理 / 配置预览共用的目标状态点：连得上绿、连不上红，不要求当前页才点亮 */
-.nav-live {
-  display: block; position: absolute; right: 11px; width: 7px; height: 7px; border-radius: 50%;
-  background: #5b6a85; transition: background .15s, box-shadow .15s;
-}
-.nav-live.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .18); }
-.nav-live.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .18); }
 
 .side-flex { flex: 1; }
 /* 本机用量环：只有本机才有的信息，放在分割线上方（side-foot 的 border-top 就是那条线） */
@@ -289,9 +280,15 @@ body {
 }
 .tt-label { overflow: hidden; text-overflow: ellipsis; }
 .tt-os { font-size: 12.5px; opacity: .95; }
-.tt-dot { width: 7px; height: 7px; min-width: 7px; border-radius: 50%; background: #c9d2e0; }
-.ttab.active .tt-dot.run { background: var(--ok); box-shadow: 0 0 5px rgba(22, 163, 74, 0.5); }
-.ttab.active .tt-dot.off { background: var(--danger); }
+/* 每台设备的页签都上色，不只当前一台：绿=控制台连通、黄=连通但有隧道异常、红=连不通。
+   没有灰色档：还没探到的时候点先空着，避免拿"灰"去表达一个没人能解释的状态 */
+.tt-dot { width: 7px; height: 7px; min-width: 7px; border-radius: 50%; background: transparent; }
+.tt-dot.run { background: var(--ok); }
+.tt-dot.warn { background: var(--warn); }
+.tt-dot.off { background: var(--danger); }
+.ttab.active .tt-dot.run { box-shadow: 0 0 5px rgba(22, 163, 74, 0.5); }
+.ttab.active .tt-dot.warn { box-shadow: 0 0 5px rgba(217, 119, 6, 0.45); }
+.ttab.active .tt-dot.off { box-shadow: 0 0 5px rgba(220, 38, 38, 0.45); }
 /* 悬浮出现的「＋ 新建设备」与设备状态点 */
 .tt-add { color: var(--primary-deep); }
 .tt-plus { font-size: 14px; line-height: 1; }

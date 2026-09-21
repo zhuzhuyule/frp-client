@@ -14,6 +14,9 @@ const state = {
   search: "",
   status: null,
   targets: { active: "local", activeId: "", activeName: "", list: [] },
+  // 每台设备的控制台连通性：{ id: { ok, bad } }，只喂页签上的点
+  probe: {},
+  probing: false,
   cfg: { raw: "", basics: null, proxies: [], storeMode: false },
   logKind: "stdout",
   promptedCreds: false,
@@ -170,6 +173,7 @@ async function loadTargets() {
   if (okv(t)) {
     state.targets = t;
     renderTargetTabs();
+    probeTargets();
     if (!state.promptedCreds) {
       const miss = t.list.filter((x) => x.kind === "local" && x.needCreds);
       if (miss.length) {
@@ -181,6 +185,23 @@ async function loadTargets() {
   }
 }
 
+/* 设备连通性：get_status 只看得见当前一台，页签上的点要覆盖所有设备，所以另开一条批量探活。
+   走 invoke 而不是 call —— 后台探活不该上忙碌锁（会把按钮禁用两秒），也不该 toast 报错。 */
+async function probeTargets() {
+  if (state.probing) return;
+  state.probing = true;
+  try {
+    const r = await invoke("probe_targets");
+    if (r) {
+      state.probe = r;
+      renderTargetTabs();
+    }
+  } catch (e) {
+    /* 探不到就下一轮再探，不打扰 */
+  }
+  state.probing = false;
+}
+
 function tabsHtml() {
   const { activeId, list } = state.targets;
   const add = `<div class="ttab tt-add" title="新建设备"><span class="tt-plus">＋</span><span class="tt-label">新建设备</span></div>`;
@@ -188,10 +209,13 @@ function tabsHtml() {
   return list
     .map((x) => {
       const isActive = x.id === activeId;
-      const dot = isActive ? (state.status && state.status.running ? "run" : "off") : "";
       const glyph = OS_GLYPH[x.os] || "";
+      // 所有设备都上色，不只当前一台：绿=控制台连通、黄=连通但有隧道不在跑或报错、红=连不通
+      const p = state.probe[x.id];
+      const dot = !p ? "" : p.ok ? (p.bad ? "warn" : "run") : "off";
+      const tip = !p ? "正在探测这台设备" : p.ok ? (p.bad ? `${p.bad} 条隧道异常` : "控制台连通，隧道正常") : "控制台连不通";
       return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-id="${esc(x.id)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}${x.kind === "local" ? " · " + esc(x.id) : ""}">
-        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>
+        ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}" title="${tip}"></span><span class="tt-label">${esc(x.name)}</span>
       </div>`;
     })
     .join("") + add;
@@ -455,17 +479,13 @@ function loadingGuard() {
   return true;
 }
 
-/* 状态点：控制台连得上给绿点，连不上给红点（侧边栏导航项和底部状态行共用同一判断）
+/* 状态点：控制台连得上给绿点，连不上给红点
    sub 只放本机 frpc 的运行时长；其它情况留空，侧栏不重复页签上已经有的信息 */
 function renderSideStatus(name, sub, up) {
   const el = $("side-status");
   el.innerHTML = `<i class="ss-dot${up ? " on" : " off"}"></i>`
     + `<div class="ss-txt"><span class="ss-name">${esc(name)}</span>`
     + (sub ? `<span class="ss-sub">${esc(sub)}</span>` : "") + `</div>`;
-  document.querySelectorAll(".nav-live").forEach((d) => {
-    d.classList.toggle("on", !!up);
-    d.classList.toggle("off", !up);
-  });
 }
 
 /* ---------- 侧边栏分割线上方：本机 frpc 的 CPU / 内存占用环 ---------- */
@@ -561,6 +581,11 @@ async function refreshStatus() {
   const s = state.status;
   state.loading = false;
   const st = s.procStats;
+  // 当前这台的结果已经在 get_status 里了，先填进探活表，页签上的点不用等 probe_targets 那一轮
+  state.probe[s.targetId] = {
+    ok: !!s.apiReachable,
+    bad: (s.proxies || []).filter((p) => p.status !== "running" || p.err).length,
+  };
   // 已连上的本机只报运行时长；其它设备页签上已经有名字，这里不再重复一行字
   const sub = s.mode === "local" && s.running && st && st.etime ? fmtEtime(st.etime) : "";
   renderSideStatus(s.targetName, sub, s.apiReachable || s.running);
@@ -1168,8 +1193,11 @@ $("btn-refresh").addEventListener("click", async () => {
   await loadConfig();
   applyMode();
   clearStale();
+  let tick = 0;
   setInterval(() => {
     if (document.hidden || state.busy) return;
     refreshStatus();
+    // 页签上其它设备的点：每 15s 整批探一次（离线设备要等超时，比状态轮询贵）
+    if (++tick % 3 === 0) probeTargets();
   }, 5000);
 })();
