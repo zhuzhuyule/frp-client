@@ -3,11 +3,12 @@
 mod backend;
 
 use backend::{
-    apply_basics, check_local_console_addr, discover_locals, fetch_config, fetch_status,
-    load_locals, load_remotes, local_port_owners, parse_basics, parse_proxies, probe_store,
-    proc_stats, put_config, read_config_file, remove_proxy, restart, restore_config_from_backup,
-    running_frpcs, save_config, save_locals, save_remotes, start, stop, store_add, store_delete,
-    store_proxies, store_replace, store_update, tail, validate_host, wait_ready,
+    apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
+    fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_port_owners,
+    parse_basics, parse_proxies, probe_store, proc_stats, put_config, read_config_file,
+    remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
+    save_remotes, start, stop, store_add, store_delete, store_proxies, store_replace,
+    store_update, tail, validate_host, version_at_least, wait_ready,
     Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyCfg, RemoteTarget,
 };
 use serde::Deserialize;
@@ -429,44 +430,17 @@ async fn add_local(
     }
 }
 
-/// 补全/修改某个本机实例的控制台地址与凭据
+/// 手动检查 frp 是否有新版本：只有用户点按钮才会联网。
+/// current 传本机正在跑的 frpc 版本号（读不到时留空，只报告最新版）。
 #[tauri::command]
-async fn set_local_console(
-    state: State<'_, AppState>,
-    id: String,
-    addr: String,
-    port: String,
-    user: String,
-    password: String,
-) -> Result<String, String> {
-    let addr = addr.trim().to_string();
-    let port = if port.trim().is_empty() { "7400".to_string() } else { port.trim().to_string() };
-    let user = user.trim().to_string();
-    validate_host(&addr).map_err(|e| format!("{e:#}"))?;
-    check_local_console_addr(&addr).map_err(|e| format!("{e:#}"))?;
-    if user.is_empty() {
-        return Err("webServer 用户名不能为空".into());
-    }
-    upsert_local_saved(&id, |s| {
-        s.addr = addr.clone();
-        s.port = port.clone();
-        s.user = user.clone();
-        if !password.is_empty() {
-            s.password = password.clone();
-        }
-    })?;
-    rescan(&state).await?;
-    let inst = local_instance(&state, &id)?;
-    let ep = inst.target.endpoint();
-    let note = match blocked(move || fetch_status(&ep)).await {
-        Ok(list) => format!("已保存，控制台可达（{} 条隧道）", list.len()),
-        Err(e) => format!("已保存，但控制台仍不可达：{e}"),
-    };
-    if active_of(&state) == Active::Local(id.clone()) {
-        let src = pull_staged(&state).await.unwrap_or_default();
-        *state.staged.lock().unwrap() = src;
-    }
-    Ok(note)
+async fn check_update(current: String) -> Result<serde_json::Value, String> {
+    let cur = current.trim().to_string();
+    let (version, url) =
+        blocked(move || latest_frp_release().map_err(|e| anyhow::anyhow!(e))).await?;
+    let has_update = !cur.is_empty() && !version_at_least(&cur, &version);
+    Ok(serde_json::json!({
+        "version": version, "url": url, "current": cur, "hasUpdate": has_update,
+    }))
 }
 
 #[tauri::command]
@@ -656,7 +630,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     let ep2 = ep.clone();
     let t2 = t.clone();
     let inst_pid = inst.as_ref().and_then(|x| x.pid);
-    let (status, pid, saved_at, stats, owners) = tauri::async_runtime::spawn_blocking(move || {
+    let (status, pid, saved_at, stats, ver, owners) = tauri::async_runtime::spawn_blocking(move || {
         let list = fetch_status(&ep2);
         let pid = t2.as_ref().and_then(|t| {
             let run = running_frpcs();
@@ -668,6 +642,11 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                 .map(|(pid, _)| *pid)
         });
         let stats = pid.and_then(proc_stats);
+        // 首次会真的跑一次 `frpc --version`，所以放在 blocking 里；结果按路径缓存
+        let ver = stats
+            .as_ref()
+            .map(|st| (bin_version(&st.bin).unwrap_or_default(), binary_upgraded(&st.bin, &st.etime)))
+            .unwrap_or_default();
         let owners = if t2.is_some() { local_port_owners() } else { Default::default() };
         let saved = t2
             .as_ref()
@@ -685,7 +664,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                     .map(|s| s.trim().to_string())
             })
             .unwrap_or_default();
-        (list, pid, saved, stats, owners)
+        (list, pid, saved, stats, ver, owners)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -758,8 +737,9 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "errPath": log_err.1,
         "savedAt": saved_at,
         "procStats": stats.map(|st| serde_json::json!({
-            "name": st.name, "rssMb": st.rss_mb, "memPct": st.mem_pct,
+            "name": st.name, "bin": st.bin, "rssMb": st.rss_mb, "memPct": st.mem_pct,
             "cpuPct": st.cpu_pct, "etime": st.etime,
+            "binVersion": ver.0, "upgraded": ver.1,
         })),
     }))
 }
@@ -1066,7 +1046,7 @@ fn main() {
             get_targets,
             set_target,
             add_local,
-            set_local_console,
+            check_update,
             rename_local,
             remove_local,
             rescan_locals,

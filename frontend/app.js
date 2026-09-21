@@ -16,6 +16,8 @@ const state = {
   logKind: "stdout",
   promptedCreds: false,
   storeMode: false,
+  // 最近一次「检查更新」的结果：{ version, at }，只在用户点过之后才有值
+  latest: null,
   editing: null,
   // 服务器设置弹窗里的草稿：raw 是唯一真相，UI 表单只是它的一个视图
   srv: { tab: "ui", raw: "", dirty: false },
@@ -40,6 +42,23 @@ function esc(s) {
   return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 const isRemote = () => state.targets.active === "remote";
+/* x.y.z 逐段比较，够 frp 的版本号用；段数不等时缺的按 0 */
+function versionAtLeast(cur, want) {
+  const nums = (s) => String(s || "").replace(/^v/, "").split(".").map((p) => parseInt(p, 10) || 0);
+  const a = nums(cur);
+  const b = nums(want);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+function nowHM() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function activeTarget() {
   return state.targets.list.find((x) => x.id === state.targets.activeId) || null;
 }
@@ -389,54 +408,79 @@ $("btn-dv-rescan").addEventListener("click", async () => {
 });
 $("btn-edit-device").addEventListener("click", () => openDeviceModal(state.targets.activeId));
 
-/* ---------- 配置里的 webServer 与设备连接参数漂移 ---------- */
-/* 设备记的是「App 用什么地址连」，配置里的 webServer 是「那台 frpc 自己绑在哪」。
-   addr 不参与比较：远端常常绑 0.0.0.0，而 App 用它的局域网地址连，两者本就不该相同。 */
-function driftItems() {
-  const t = activeTarget();
-  const b = (state.cfg || {}).basics;
-  if (!t || !b || !b.webPort) return null;
-  const items = [];
-  if (String(b.webPort) !== String(t.port)) {
-    items.push(`端口：配置 ${b.webPort}，App 连接 ${t.port}`);
-  }
-  if (b.webUser && t.user && b.webUser !== t.user) {
-    items.push(`user：配置 ${b.webUser}，App 连接 ${t.user}`);
-  }
-  return items.length ? items : null;
-}
-
-function renderDrift() {
-  const el = $("conn-drift");
-  const items = driftItems();
-  if (!items) {
-    el.classList.add("hidden");
-    el.innerHTML = "";
+/* ---------- 侧边栏底部：本机 frpc 的运行状态、版本与用量 ---------- */
+/* frpc 的 webServer 没有任何版本端点（实测只有 status/config/reload/stop/store），
+   所以版本只能问本机二进制；远端那一侧就地说明读不到，不做手填、不加新通道。 */
+function renderSideMetrics(s) {
+  const box = $("side-metrics");
+  if (!s) {
+    box.innerHTML = "";
     return;
   }
-  const t = activeTarget();
-  el.innerHTML = `设备连接参数与配置不一致 —— ${items.join("；")}。`
-    + `<button class="btn sm js-align">按配置更新「${esc(t.name)}」</button>`;
-  el.classList.remove("hidden");
+  const st = s.procStats;
+  const local = s.mode === "local";
+  const bits = [];
+  if (local) {
+    const ver = st && st.binVersion;
+    bits.push(
+      `<div class="sm-ver"><span class="sm-k">frpc</span>`
+        + `<span class="sm-v">${ver ? esc(ver) : "版本未知"}</span>`
+        + (ver ? `<button id="btn-update" class="btn xs ghost">检查更新</button>` : "")
+        + `</div>`
+    );
+    if (st && st.upgraded) {
+      bits.push(`<div class="sm-note warn">磁盘上的二进制已更新，重启后才生效</div>`);
+    }
+    if (state.latest) {
+      // 没读到本机版本时只报最新版，不能声称「已是最新」
+      const L = esc(state.latest.version);
+      const at = ` · ${esc(state.latest.at)}`;
+      if (!ver) bits.push(`<div class="sm-note">GitHub 最新 ${L}${at}</div>`);
+      else if (!versionAtLeast(ver, state.latest.version)) {
+        bits.push(`<div class="sm-note warn">GitHub 最新 ${L}，可更新${at}</div>`);
+      } else bits.push(`<div class="sm-note">已是最新（${L}）${at}</div>`);
+    }
+    if (st) {
+      bits.push(
+        `<div class="sm-rings">${gauge(st.memPct, "内存", `${st.rssMb}MB`, "占整机物理内存的比例")}`
+          + `${gauge(st.cpuPct, "CPU", `${st.cpuPct}%`, "100% = 跑满一个核心")}</div>`
+      );
+      bits.push(
+        `<div class="sm-note">${esc(st.name || "frpc")}${s.pid ? ` · PID ${s.pid}` : ""}`
+          + ` · 已运行 ${fmtEtime(st.etime)}</div>`
+      );
+    }
+  } else if (s.running) {
+    bits.push(`<div class="sm-note">远端版本读不到：它的控制台没有版本接口</div>`);
+  }
+  box.innerHTML = bits.join("");
+  const btn = $("btn-update");
+  if (btn) btn.addEventListener("click", checkUpdate);
 }
 
-async function alignDevice() {
-  const t = activeTarget();
-  const b = (state.cfg || {}).basics;
-  if (!t || !b) return;
-  const note = t.kind === "local"
-    ? await call("set_local_console", { id: t.id, addr: t.host, port: b.webPort, user: b.webUser || t.user, password: "" })
-    : await call("update_target", {
-        original: t.id, name: t.name, host: t.host, port: b.webPort,
-        user: b.webUser || t.user, password: "", os: t.os || "",
-      });
-  if (!okv(note)) return;
-  toast(note, String(note).includes("但") ? "info" : "ok");
-  await afterTargetChange();
+let checkingUpdate = false;
+async function checkUpdate() {
+  if (checkingUpdate) return;
+  const st = (state.status || {}).procStats;
+  checkingUpdate = true;
+  const btn = $("btn-update");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "检查中…";
+  }
+  const r = await call("check_update", { current: (st && st.binVersion) || "" });
+  checkingUpdate = false;
+  if (!okv(r)) {
+    renderSideMetrics(state.status);
+    return;
+  }
+  state.latest = { version: r.version, at: nowHM() };
+  toast(
+    r.hasUpdate ? `frp 有新版 ${r.version}（当前 ${r.current || "未知"}）` : `已是最新 ${r.version}`,
+    r.hasUpdate ? "info" : "ok"
+  );
+  renderSideMetrics(state.status);
 }
-document.addEventListener("click", (e) => {
-  if (e.target.classList.contains("js-align")) alignDevice();
-});
 
 /* ---------- status rendering ---------- */
 async function refreshStatus() {
@@ -447,6 +491,7 @@ async function refreshStatus() {
     $("side-status").textContent = "● 未识别到目标";
     $("side-status").classList.add("off");
     $("tunnel-rows").innerHTML = "";
+    renderSideMetrics(null);
     renderTargetTabs();
     renderConfigOverview();
     toast(`状态获取失败：${e}`, "err");
@@ -458,13 +503,7 @@ async function refreshStatus() {
     ? `● ${esc(s.targetName)} · frpc 运行中${s.mode === "local" ? " · PID " + s.pid : ""}`
     : `● ${esc(s.targetName)} · frpc 不可达`;
   side.classList.toggle("off", !s.running);
-  const proc = $("chip-proc");
-  if (s.procStats) {
-    proc.textContent = `frpc 内存 ${s.procStats.rssMb}MB · CPU ${s.procStats.cpuPct}% · 运行 ${s.procStats.etime}`;
-    proc.classList.remove("hidden");
-  } else {
-    proc.classList.add("hidden");
-  }
+  renderSideMetrics(s);
   renderTargetTabs();
   renderTunnels();
   renderOverview(s);
@@ -532,15 +571,14 @@ function renderTunnels() {
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
-          <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err" : ""}">${p.err ? "存在错误" : esc(typeDesc(p.ptype)) + (p.source === "store" ? " · 实时" : "")}</i></div>
+          <div class="t-name"><b>${esc(p.name)}</b><i class="${p.err ? "err err-link" : ""}" ${p.err ? 'title="点击查看日志排查"' : ""}>${p.err ? "存在错误" : esc(typeDesc(p.ptype)) + (p.source === "store" ? " · 实时" : "")}</i></div>
         </div>
         <div class="col-local t-two">
           <span>${esc(p.localAddr || "—")}</span>
-          ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid} · CPU ${svc.cpuPct}%">${esc(svc.name)} · ${svc.rssMb}MB</i>` : ""}
+          ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid}">${esc(svc.name)}</i>` : ""}
         </div>
         <div class="col-remote t-two">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
-        <span class="col-status"><span class="badge ${running ? "run" : "stop"}">● ${running ? "运行中" : esc(p.status)}</span></span>
-        <span class="col-err${p.err ? " err-link" : ""}" ${p.err ? 'title="点击查看日志排查" ' : ""}data-err="${esc(p.err)}">${esc(p.err)}</span>
+        <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? "运行中" : esc(p.status)}</span></span>
         <span class="col-edit">
           <button class="btn icon edit" data-name="${esc(p.name)}" title="编辑该隧道">${ICO_EDIT}</button>
           <button class="btn icon danger del" data-name="${esc(p.name)}" title="删除该隧道">${ICO_DEL}</button>
@@ -655,7 +693,7 @@ async function loadConfig() {
   }
 }
 
-/* tab 行下方：第一行是设备当前的连接与运行事实，第二行（仅本机）是进程用量 */
+/* tab 行下方：这一台设备当前的连接与运行事实（进程用量在侧边栏底部） */
 function fmtEtime(e) {
   const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(e || "");
   if (!m) return e || "";
@@ -705,12 +743,7 @@ function statusStrip(t, s) {
       ${bad ? cell("异常", `${bad} 条`, true) : ""}
       ${live ? cell("生效", state.storeMode ? "实时（store）" : "保存后") : ""}
       ${t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : ""}
-    </div>
-    ${local && stats ? `<div class="st-gauges">
-        <div class="st-cell"><span class="st-k">进程</span><span class="st-v">${esc(stats.name || "frpc")} · PID ${s.pid}</span></div>
-        ${gauge(stats.memPct, "内存", `${stats.rssMb}MB · ${stats.memPct}%`, "占整机物理内存的比例")}
-        ${gauge(stats.cpuPct, "CPU", `${stats.cpuPct}%`, "100% = 跑满一个核心")}
-      </div>` : ""}`;
+    </div>`;
 }
 
 function renderConfigOverview() {
@@ -759,7 +792,6 @@ function renderConfigOverview() {
     : t && t.kind === "remote"
       ? "这台设备连不上，读不到它的配置；改完「编辑设备连接」后重新点它的标签"
       : "";
-  renderDrift();
 }
 
 /* ---------- 服务器设置弹窗：UI 表单 ⇄ 原始 TOML ---------- */

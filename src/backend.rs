@@ -802,6 +802,8 @@ pub fn frpc_pids() -> Vec<u32> {
 #[derive(Clone, Debug)]
 pub struct ProcStat {
     pub name: String,
+    /// exec 时用的可执行文件绝对路径
+    pub bin: String,
     pub rss_mb: f64,
     /// 占整机物理内存的百分比（RSS / hw.memsize，两位小数）
     pub mem_pct: f64,
@@ -849,7 +851,127 @@ pub fn proc_stats(pid: u32) -> Option<ProcStat> {
     } else {
         ps_mem_pct
     };
-    Some(ProcStat { name, rss_mb: (rss_mb * 10.0).round() / 10.0, mem_pct, cpu_pct, etime })
+    Some(ProcStat {
+        name,
+        bin: comm.to_string(),
+        rss_mb: (rss_mb * 10.0).round() / 10.0,
+        mem_pct,
+        cpu_pct,
+        etime,
+    })
+}
+
+// ---------- frpc 版本 ----------
+//
+// 实测：frpc 的 webServer 只有 /api/status、/api/config、/api/reload、/api/stop、
+// /api/store/*（strings 提取），**没有任何版本端点** —— 所以版本只能问二进制自己，
+// 远端设备的 frpc 版本读不到。
+
+/// 跑 `<bin> --version` 拿版本号；同一个路径只跑一次（含失败结果，避免每轮轮询重试）
+pub fn bin_version(bin: &str) -> Option<String> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok()?.get(bin).cloned() {
+        return hit;
+    }
+    let got = if std::path::Path::new(bin).is_file() {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                s.lines()
+                    .map(|l| l.trim())
+                    .find(|l| l.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .map(|l| l.to_string())
+            })
+    } else {
+        None
+    };
+    if let Ok(mut c) = cache.lock() {
+        c.insert(bin.to_string(), got.clone());
+    }
+    got
+}
+
+/// "1-04:02:11" / "03:41:07" / "41:07" -> 运行秒数
+pub fn etime_secs(e: &str) -> Option<u64> {
+    let (d, rest) = match e.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0u64, e),
+    };
+    let mut acc = 0u64;
+    for part in rest.split(':') {
+        acc = acc * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(acc + d * 86400)
+}
+
+/// 磁盘上的二进制比正在跑的那个进程新 —— 已经换了版本，但还没重启生效
+pub fn binary_upgraded(bin: &str, etime: &str) -> bool {
+    let up = std::path::Path::new(bin)
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok();
+    let started = etime_secs(etime).and_then(|s| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|n| n.as_secs().saturating_sub(s))
+    });
+    match (up, started) {
+        (Some(m), Some(t)) => m
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|m| m.as_secs() > t)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// 语义化版本比较：a<b 返回 false。非数字段按 0 处理，够 frp 的 x.y.z 用
+pub fn version_at_least(cur: &str, want: &str) -> bool {
+    let nums = |s: &str| -> Vec<u64> {
+        s.trim()
+            .trim_start_matches('v')
+            .split('.')
+            .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (nums(cur), nums(want));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x > y;
+        }
+    }
+    true
+}
+
+/// GitHub 上 fatedier/frp 的最新发布版本；只在用户点「检查更新」时调用
+pub fn latest_frp_release() -> Result<(String, String), String> {
+    let url = "https://api.github.com/repos/fatedier/frp/releases/latest";
+    let body: serde_json::Value = ureq::get(url)
+        .set("User-Agent", "frp-client-tauri")
+        .timeout(Duration::from_secs(8))
+        .call()
+        .map_err(|e| format!("GET {url} 失败：{e}"))?
+        .into_json()
+        .map_err(|e| format!("解析 GitHub 响应失败：{e}"))?;
+    let tag = body
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| "GitHub 响应里没有 tag_name".to_string())?
+        .trim_start_matches('v')
+        .to_string();
+    let page = body
+        .get("html_url")
+        .and_then(|t| t.as_str())
+        .unwrap_or("https://github.com/fatedier/frp/releases")
+        .to_string();
+    Ok((tag, page))
 }
 
 /// 本地端口背后那个服务的进程信息
@@ -1554,6 +1676,25 @@ remotePort = 2222
     }
 
     #[test]
+    fn ps_etime_parses_to_seconds() {
+        assert_eq!(etime_secs("41:07"), Some(2467));
+        assert_eq!(etime_secs("03:41:07"), Some(13267));
+        assert_eq!(etime_secs("1-04:02:11"), Some(100931));
+        assert_eq!(etime_secs(""), None);
+        assert_eq!(etime_secs("ab:cd"), None);
+    }
+
+    #[test]
+    fn version_compare_ignores_prefix_and_padding() {
+        assert!(version_at_least("0.71.0", "v0.71.0"));
+        assert!(version_at_least("v0.71.1", "0.71.0"));
+        assert!(!version_at_least("0.68.2", "0.71.0"));
+        assert!(version_at_least("0.72", "0.71.9"));
+        // 拿到非版本号的杂串时按 0 处理，至少不能 panic
+        assert!(!version_at_least("frpc", "0.71.0"));
+    }
+
+    #[test]
     fn apply_basics_updates_in_place() {
         let b = Basics {
             server_addr: "9.9.9.9".into(),
@@ -1811,6 +1952,22 @@ remotePort = 2222
                 }
             );
         }
+    }
+
+    #[test]
+    #[ignore = "会执行本机 frpc 二进制并联网打 GitHub；只读"]
+    fn live_version_probe() {
+        let pid = *frpc_pids().first().expect("本机需要有正在运行的 frpc");
+        let st = proc_stats(pid).expect("proc_stats 应读到该进程");
+        let v = bin_version(&st.bin).unwrap_or_default();
+        println!("bin={} version={} etime={} upgraded={}", st.bin, v, st.etime, binary_upgraded(&st.bin, &st.etime));
+        assert!(v.chars().next().unwrap_or('x').is_ascii_digit(), "版本号应以数字开头");
+        let (latest, url) = latest_frp_release().unwrap();
+        println!("github latest={latest} url={url} 可更新={}", !version_at_least(&v, &latest));
+        assert!(latest.chars().next().unwrap_or('x').is_ascii_digit());
+        assert!(url.starts_with("https://"));
+        // 同一个路径第二次读要走缓存，不再 fork 进程
+        assert_eq!(bin_version(&st.bin).as_deref(), Some(v.as_str()));
     }
 
     #[test]

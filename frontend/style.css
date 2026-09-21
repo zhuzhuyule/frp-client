@@ -92,6 +92,22 @@ body {
 .side-status { font-size: 11px; color: #4ade80; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-top: 8px; }
 .side-status.off { color: #f87171; }
 .side-motto { font-size: 10px; color: var(--side-faint); margin-top: 4px; }
+/* 侧边栏底部：本机 frpc 的版本与用量（这些只属于本机，别处不显示） */
+.side-metrics { display: flex; flex-direction: column; gap: 5px; padding-top: 8px; font-size: 11px; }
+.side-metrics:empty { display: none; }
+.sm-ver { display: flex; align-items: center; gap: 6px; }
+.sm-k { color: var(--side-faint); }
+.sm-v { color: #d7e0ef; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sm-note { color: var(--side-faint); line-height: 1.45; }
+.sm-note.warn { color: #fbbf24; }
+.sm-rings { display: flex; gap: 12px; }
+.sm-rings .st-k { color: var(--side-faint); }
+.sm-rings .st-v { color: #c3cede; font-size: 11px; font-weight: 500; }
+.sm-rings .ring-bg { stroke: rgba(255, 255, 255, .13); }
+.sm-rings .gauge.mid .ring-fg { stroke: #6ba0f7; }
+.sm-rings .gauge.mid .ring-t { fill: #d7e0ef; }
+.side-metrics .btn.ghost { color: #9fb0cc; }
+.side-metrics .btn.ghost:hover:not(:disabled) { background: var(--side-hover); color: #dfe8f6; }
 
 /* ---------- content ---------- */
 .content { flex: 1; display: flex; flex-direction: column; padding: 22px 26px; min-width: 0; }
@@ -133,6 +149,7 @@ body {
 .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
 .btn.ghost:hover { background: #e9edf5; }
 .btn.sm { height: 28px; padding: 0 12px; font-size: 12px; }
+.btn.xs { height: 20px; padding: 0 7px; border-radius: 7px; font-size: 10.5px; }
 .btn.icon {
   width: 30px; height: 30px; padding: 0; border-radius: 8px;
   border-color: transparent; background: transparent;
@@ -249,8 +266,7 @@ body {
 .svc { font-style: normal; font-size: 11px; color: var(--muted); }
 .r-main { font-size: 12.5px; color: var(--text); }
 .r-sub { font-size: 11px; color: var(--muted); }
-.col-err { flex: 1.3 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); font-size: 12px; }
-.col-err.err-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.err-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .col-edit { flex: 0 0 68px; display: flex; gap: 2px; justify-content: center; }
 
 .trow {
@@ -309,13 +325,6 @@ body {
 .hint.warn { color: var(--warn); margin-top: 8px; }
 
 /* ---------- 配置预览：选中设备的状态条 + 连接/配置两栏 ---------- */
-/* 设备连接参数和该 frpc 配置里的 webServer 不一致时的提醒 */
-.drift {
-  margin-top: 12px; padding: 9px 12px; border-radius: 10px;
-  background: var(--warn-soft); border: 1px solid #f2ddc0;
-  color: #92610c; font-size: 12px; line-height: 1.7;
-}
-.drift .btn { margin-left: 8px; }
 /* tab 行下面这条：设备现在跑成什么样（只读，改东西去下面两个弹窗） */
 .ov-status { display: flex; flex-direction: column; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 /* 第一行：连接状态 + 运行情况 + 关键计数，横向排开自动换行 */
@@ -324,8 +333,6 @@ body {
 .st-live { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
 .st-live.warm { color: var(--warn); }
 .st-live.off { color: var(--faint); font-weight: 500; }
-/* 第二行（本机专属）：进程名与用量环 */
-.st-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 22px; align-items: center; }
 .gauge { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .gauge svg { flex: 0 0 auto; overflow: visible; }
 .ring-bg { fill: none; stroke: #e9eef6; stroke-width: 4; }

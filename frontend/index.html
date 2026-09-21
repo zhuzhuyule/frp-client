@@ -25,6 +25,7 @@
     <div class="side-flex"></div>
     <div class="side-foot">
       <div id="side-status" class="side-status">● 检测中…</div>
+      <div id="side-metrics" class="side-metrics"></div>
       <div class="side-motto">FRP Client · 让本地服务更容易被访问</div>
     </div>
   </aside>
@@ -54,7 +55,6 @@
             <div class="chips">
               <span id="chip-run" class="chip ok">● 运行中</span>
               <span id="chip-cnt" class="chip">隧道 0 / 0</span>
-              <span id="chip-proc" class="chip hidden"></span>
             </div>
             <div class="row gap" id="proc-btns">
               <button id="btn-start" class="btn primary sm">启动</button>
@@ -67,7 +67,6 @@
             <span class="col-local">本地 / 后台进程</span>
             <span class="col-remote">映射（域名优先）</span>
             <span class="col-status">运行状态</span>
-            <span class="col-err">错误</span>
             <span class="col-edit">操作</span>
           </div>
           <div id="tunnel-rows" class="rows"></div>
@@ -82,7 +81,6 @@
         <div id="ctabs" class="ttabs"></div>
         <div class="card">
           <div id="ov-status" class="ov-status"></div>
-          <div id="conn-drift" class="drift hidden"></div>
           <div class="ov-grid">
             <div class="ov-sec">
               <div class="card-title">这台设备的连接方式</div>
