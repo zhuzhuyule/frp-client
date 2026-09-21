@@ -22,8 +22,6 @@ pub struct Target {
     pub base_url: String,
     pub user: String,
     pub password: String,
-    pub server_addr: String,
-    pub server_port: i64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -89,8 +87,6 @@ pub fn detect_target() -> Result<Target> {
         base_url: format!("http://{web_addr}:{web_port}"),
         user: get_str(&["webServer", "user"], ""),
         password: get_str(&["webServer", "password"], ""),
-        server_addr: get_str(&["serverAddr"], ""),
-        server_port: get_int(&["serverPort"], 7000),
     })
 }
 
@@ -410,6 +406,17 @@ pub fn save_config(t: &Target, toml_src: &str) -> Result<PathBuf> {
     std::fs::rename(&tmp, &t.config_path)
         .with_context(|| format!("替换 {} 失败", t.config_path.display()))?;
     Ok(bak)
+}
+
+/// 用备份文件覆盖当前配置（原子替换），返回还原后的配置原文
+pub fn restore_config_from_backup(t: &Target, bak: &Path) -> Result<String> {
+    let src = std::fs::read_to_string(bak)
+        .with_context(|| format!("读取备份 {} 失败", bak.display()))?;
+    let tmp = t.config_path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &src).context("写临时文件失败")?;
+    std::fs::rename(&tmp, &t.config_path)
+        .with_context(|| format!("还原 {} 失败", t.config_path.display()))?;
+    Ok(src)
 }
 
 // ---------- structured TOML editing (comment preserving) ----------
@@ -784,8 +791,6 @@ remotePort = 2222
             base_url: "http://x".into(),
             user: "".into(),
             password: "".into(),
-            server_addr: "".into(),
-            server_port: 0,
         };
         assert!(save_config(&t, "not = = valid").is_err());
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), SAMPLE); // 非法写入不留痕
@@ -793,6 +798,32 @@ remotePort = 2222
         assert!(out.exists()); // 备份存在
         let now = std::fs::read_to_string(&cfg).unwrap();
         assert!(now.contains("5.5.5.5"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restore_config_from_backup_round_trip() {
+        let dir = std::env::temp_dir().join(format!("frpc-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("frpc.toml");
+        std::fs::write(&cfg, SAMPLE).unwrap();
+        let t = Target {
+            config_path: cfg.clone(),
+            log_path: dir.join("frpc.log"),
+            err_path: dir.join("frpc.err"),
+            launchd_label: "x".into(),
+            plist_path: dir.join("x.plist"),
+            base_url: "http://x".into(),
+            user: "".into(),
+            password: "".into(),
+        };
+        let bad = "serverAddr = \"5.5.5.5\"";
+        let bak = save_config(&t, bad).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), bad);
+        let src = restore_config_from_backup(&t, &bak).unwrap();
+        assert_eq!(src, SAMPLE);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), SAMPLE);
+        assert!(restore_config_from_backup(&t, &dir.join("nope.bak")).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

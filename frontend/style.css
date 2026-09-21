@@ -266,6 +266,14 @@ body {
 .field.wide { flex: 2; }
 .field.narrow { flex: 0 0 110px; }
 .field span { font-size: 12px; color: var(--muted); }
+.field .secret { position: relative; display: flex; }
+.field .secret input { flex: 1; min-width: 0; padding-right: 46px; }
+.eye {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  border: none; background: transparent; padding: 4px 6px; border-radius: 6px;
+  font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.eye:hover { background: #f3f4f6; color: var(--text); }
 .field input, .field select {
   height: 32px; border-radius: 8px; border: 1px solid #d8dee9;
   padding: 0 10px; font-size: 13px; color: var(--text-strong); outline: none; background: #fff;
@@ -297,6 +305,22 @@ body {
 .ai-glyph { font-size: 34px; color: var(--primary); }
 .ai-title { font-size: 16px; font-weight: 700; color: var(--text-strong); }
 .ai-sub { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.7; }
+
+/* ---------- confirm modal ---------- */
+.mask {
+  position: fixed; inset: 0; z-index: 900;
+  background: #1c253666; backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  width: 400px; max-width: calc(100vw - 48px);
+  background: #fff; border-radius: 14px; padding: 20px 22px;
+  box-shadow: 0 18px 48px #1c253640;
+  animation: slide-in .18s ease-out;
+}
+.modal-title { font-size: 15px; font-weight: 700; color: var(--text-strong); }
+.modal-body { margin-top: 8px; font-size: 12.5px; line-height: 1.7; color: var(--text); }
+.modal-foot { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ---------- toasts ---------- */
 .toasts {

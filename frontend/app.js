@@ -282,6 +282,15 @@ $("search").addEventListener("input", (e) => {
   $(id).addEventListener("input", () => setDirty(true))
 );
 
+document.querySelectorAll(".eye").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    const inp = $(btn.dataset.for);
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    btn.textContent = show ? "隐藏" : "显示";
+  })
+);
+
 async function saveCfg(withRestart) {
   const note = await call("save_config_cmd", { basics: basicsFromForm(), withRestart });
   if (note) {
@@ -292,7 +301,34 @@ async function saveCfg(withRestart) {
   }
 }
 $("btn-save").addEventListener("click", () => saveCfg(false));
-$("btn-apply").addEventListener("click", () => saveCfg(isRemote() ? false : true));
+
+function showConfirm(title, body, okLabel = "确认") {
+  $("confirm-title").textContent = title;
+  $("confirm-body").textContent = body;
+  $("confirm-ok").textContent = okLabel;
+  const mask = $("confirm-mask");
+  mask.classList.remove("hidden");
+  return new Promise((resolve) => {
+    const done = (v) => {
+      mask.classList.add("hidden");
+      $("confirm-ok").onclick = $("confirm-cancel").onclick = mask.onclick = null;
+      resolve(v);
+    };
+    $("confirm-ok").onclick = () => done(true);
+    $("confirm-cancel").onclick = () => done(false);
+    mask.onclick = (e) => { if (e.target === mask) done(false); };
+  });
+}
+
+$("btn-apply").addEventListener("click", async () => {
+  if (isRemote()) { saveCfg(false); return; }
+  const ok = await showConfirm(
+    "保存并重启 frpc？",
+    "写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
+    "确认重启"
+  );
+  if (ok) saveCfg(true);
+});
 
 /* ---------- config ---------- */
 async function loadConfig() {
@@ -387,8 +423,14 @@ async function proc(action) {
   if (note) { toast(note); await refreshStatus(); }
 }
 $("btn-start").addEventListener("click", () => proc("start"));
-$("btn-restart").addEventListener("click", () => proc("restart"));
-$("btn-stop").addEventListener("click", () => proc("stop"));
+$("btn-restart").addEventListener("click", async () => {
+  const ok = await showConfirm("重启 frpc？", "重启会短暂中断当前所有隧道（约 1-3 秒）。", "确认重启");
+  if (ok) proc("restart");
+});
+$("btn-stop").addEventListener("click", async () => {
+  const ok = await showConfirm("停止 frpc？", "停止将中断当前所有隧道，直到再次启动。", "确认停止");
+  if (ok) proc("stop");
+});
 
 /* ---------- logs ---------- */
 async function loadLog() {
@@ -420,5 +462,8 @@ $("btn-refresh").addEventListener("click", async () => {
   await refreshStatus();
   await loadConfig();
   applyMode();
-  setInterval(refreshStatus, 5000);
+  setInterval(() => {
+    if (document.hidden || state.busy) return;
+    refreshStatus();
+  }, 5000);
 })();

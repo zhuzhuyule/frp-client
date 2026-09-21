@@ -105,7 +105,9 @@
             <label class="field narrow"><span>serverPort</span><input id="c-port" /></label>
           </div>
           <div class="row gap">
-            <label class="field wide"><span>auth.token</span><input id="c-token" /></label>
+            <label class="field wide"><span>auth.token</span>
+              <span class="secret"><input id="c-token" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-token">显示</button></span>
+            </label>
           </div>
           <div class="card-title" style="margin-top:14px">本地控制台 webServer</div>
           <div class="row gap">
@@ -114,7 +116,9 @@
           </div>
           <div class="row gap">
             <label class="field"><span>user</span><input id="c-web-user" /></label>
-            <label class="field"><span>password</span><input id="c-web-pass" /></label>
+            <label class="field"><span>password</span>
+              <span class="secret"><input id="c-web-pass" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-web-pass">显示</button></span>
+            </label>
           </div>
           <div class="hint warn">webServer 绑非回环地址会把控制台暴露到网络（有密码保护），请确认是有意为之</div>
         </div>
@@ -199,6 +203,16 @@
   </main>
 </div>
 <div id="toasts" class="toasts"></div>
+<div id="confirm-mask" class="mask hidden">
+  <div class="modal">
+    <div class="modal-title" id="confirm-title"></div>
+    <div class="modal-body" id="confirm-body"></div>
+    <div class="modal-foot">
+      <button id="confirm-cancel" class="btn sm">取消</button>
+      <button id="confirm-ok" class="btn primary sm">确认</button>
+    </div>
+  </div>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

@@ -4,9 +4,9 @@ mod backend;
 
 use backend::{
     apply_basics, detect_target, fetch_config, fetch_status, frpc_pid, load_remotes, parse_basics,
-    parse_proxies, put_config, read_config_file, remove_proxy, restart, save_config, save_remotes,
-    start, stop, tail, validate_host, wait_ready, Basics as BackendBasics, Endpoint, NewProxy,
-    RemoteTarget, Target,
+    parse_proxies, put_config, read_config_file, remove_proxy, restart, restore_config_from_backup,
+    save_config, save_remotes, start, stop, tail, validate_host, wait_ready, Basics as BackendBasics,
+    Endpoint, NewProxy, RemoteTarget, Target,
 };
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -397,40 +397,60 @@ async fn save_config_cmd(
     let staged = state.staged.lock().unwrap().clone();
     let basics = basics.into_backend();
     let new_src = apply_basics(&staged, &basics).map_err(|e| format!("{e:#}"))?;
-    let note = match a {
+    let (note, authoritative) = match a {
         Active::Local => {
             let t = local_target(&state)?.clone();
             let new_src2 = new_src.clone();
-            blocked(move || -> anyhow::Result<String> {
+            blocked(move || -> anyhow::Result<(String, String)> {
                 let bak = save_config(&t, &new_src2)?;
-                let mut note = format!(
-                    "已保存（备份 {}）",
-                    bak.file_name().and_then(|s| s.to_str()).unwrap_or("?")
-                );
+                let bak_name = bak
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?")
+                    .to_string();
+                let mut note = format!("已保存（备份 {bak_name}）");
+                let mut src = new_src2.clone();
                 if with_restart {
                     restart(&t)?;
                     if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
                         note.push_str(" · frpc 已重启并就绪");
                     } else {
-                        note.push_str(" · 已重启但 API 15s 内未就绪，查看日志");
+                        match restore_config_from_backup(&t, &bak) {
+                            Ok(restored) => {
+                                restart(&t)?;
+                                if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
+                                    src = restored;
+                                    note.push_str(&format!(
+                                        " · 新配置启动失败，已自动回滚到 {bak_name} 并恢复运行"
+                                    ));
+                                } else {
+                                    note.push_str(&format!(
+                                        " · 新配置启动失败，已回滚 {bak_name} 但 API 仍未就绪，请查看日志"
+                                    ));
+                                }
+                            }
+                            Err(e) => note.push_str(&format!(
+                                " · 已重启但 API 15s 内未就绪，且回滚失败：{e:#}"
+                            )),
+                        }
                     }
                 } else if frpc_pid().is_some() {
                     note.push_str(" · 未重启，改动需重启后生效");
                 }
-                Ok(note)
+                Ok((note, src))
             })
             .await?
         }
         Active::Remote(name) => {
             let new_src2 = new_src.clone();
-            blocked(move || -> anyhow::Result<String> {
+            blocked(move || -> anyhow::Result<(String, String)> {
                 put_config(&ep, &new_src2)?;
-                Ok(format!("已保存到 {name} 并热加载生效"))
+                Ok((format!("已保存到 {name} 并热加载生效"), new_src2))
             })
             .await?
         }
     };
-    *state.staged.lock().unwrap() = new_src;
+    *state.staged.lock().unwrap() = authoritative;
     Ok(note)
 }
 
@@ -476,7 +496,13 @@ async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, St
     } else {
         t.log_path.clone()
     };
-    blocked(move || tail(&path, 200_000).map_err(|e| anyhow::anyhow!("{e}"))).await
+    blocked(move || {
+        if !path.exists() {
+            return Ok(format!("（日志文件不存在：{}）", path.display()));
+        }
+        tail(&path, 64_000).map_err(|e| anyhow::anyhow!("{e}"))
+    })
+    .await
 }
 
 fn main() {
