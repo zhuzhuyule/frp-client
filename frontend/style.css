@@ -226,14 +226,11 @@ body {
 .tt-plus { font-size: 14px; line-height: 1; }
 
 .table-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.tt-wrap .table-card { border-radius: 0 0 14px 14px; box-shadow: 0 8px 16px rgba(28, 37, 54, 0.06); }
+.tt-wrap .card { border-radius: 0 0 14px 14px; box-shadow: 0 8px 16px rgba(28, 37, 54, 0.06); }
 .table-top {
   padding: 2px 2px 10px;
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
 }
-/* 配置页的 tab 下面没有卡片了，激活页与页面底色融为一体 */
-.ctabs { margin-bottom: -4px; }
-.ctabs .ttab.active { background: var(--bg-page); border-bottom-color: var(--bg-page); }
 .thead {
   display: flex; align-items: center; gap: 10px;
   padding: 6px 10px; border-bottom: 1px solid var(--border);
@@ -314,7 +311,7 @@ body {
 /* ---------- 配置预览：选中设备的状态条 + 连接/配置两栏 ---------- */
 /* 设备连接参数和该 frpc 配置里的 webServer 不一致时的提醒 */
 .drift {
-  padding: 9px 12px; border-radius: 10px;
+  margin-top: 12px; padding: 9px 12px; border-radius: 10px;
   background: var(--warn-soft); border: 1px solid #f2ddc0;
   color: #92610c; font-size: 12px; line-height: 1.7;
 }
@@ -322,7 +319,7 @@ body {
 /* tab 行下面这条：设备现在跑成什么样（只读，改东西去下面两个弹窗） */
 .ov-status {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
-  padding: 2px 2px 12px; border-bottom: 1px solid var(--border);
+  padding: 0 0 12px; border-bottom: 1px solid var(--border);
 }
 .st-badges { display: flex; gap: 6px; }
 .st-cells { display: flex; flex-wrap: wrap; gap: 6px 24px; }
