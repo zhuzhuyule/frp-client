@@ -306,7 +306,9 @@ function styleDeviceModal() {
   document.querySelectorAll("#dv-kind .mtab").forEach((b) =>
     b.classList.toggle("active", b.dataset.kind === kind)
   );
-  $("d-host-label").textContent = kind === "local" ? "控制台地址（本机一般 127.0.0.1）" : "主机";
+  $("d-host-label").textContent = kind === "local" ? "本机地址" : "主机地址";
+  // app.toml 里本机段用的是 addr，远端段用的是 host
+  $("d-host-key").textContent = kind === "local" ? "addr" : "host";
   $("d-host").placeholder = kind === "local" ? "127.0.0.1" : "192.168.3.10";
   $("d-os-wrap").classList.toggle("hidden", kind === "local");
   // 机器类型藏起来时名称独占一行会缺半截，让它铺满
@@ -349,6 +351,17 @@ function renderPresets() {
   markPresets();
 }
 
+/* 本地地址的基底值：这台设备上已有隧道用过的地址排前面，其次回环和内网前缀
+   （前缀点完光标停在末尾，接着敲主机号，和设备弹窗那套一致） */
+function renderProxyPresets(exceptName) {
+  const used = ((state.cfg && state.cfg.proxies) || [])
+    .filter((p) => p.name !== exceptName)
+    .map((p) => p.localIp)
+    .filter(Boolean);
+  presetChips("n-local-ip-presets", "n-local-ip", ["127.0.0.1"].concat(used, ["192.168.", "10."]));
+  markPresets();
+}
+
 /* 当前值正好等于某个常用值时把它标出来，一眼看出填的是不是老地址 */
 function markPresets() {
   document.querySelectorAll(".mask .preset").forEach((c) =>
@@ -364,7 +377,7 @@ document.addEventListener("click", (e) => {
   input.focus();
   markPresets();
 });
-["d-host", "d-port", "c-port", "c-web-addr", "c-web-port"].forEach((id) =>
+["d-host", "d-port", "c-port", "c-web-addr", "c-web-port", "n-local-ip"].forEach((id) =>
   $(id).addEventListener("input", markPresets)
 );
 
@@ -1057,6 +1070,7 @@ function openAddProxy() {
   ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
+  renderProxyPresets(null);
   $("proxy-mask").classList.remove("hidden");
   $("n-name").focus();
 }
@@ -1087,6 +1101,7 @@ function openEditProxy(name) {
   $("n-local-port").value = c.localPort || "";
   $("n-remote-port").value = c.remotePort || "";
   $("n-domain").value = c.domains || "";
+  renderProxyPresets(name);
   $("proxy-mask").classList.remove("hidden");
   $("n-name").focus();
 }

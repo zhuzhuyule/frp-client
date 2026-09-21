@@ -374,6 +374,14 @@ body {
 .field.wide { flex: 2; }
 .field.narrow { flex: 0 0 110px; }
 .field span { font-size: 12px; color: var(--muted); }
+/* 中文给人看，紧跟的 TOML 原名只作对照官方文档用，所以压到最小、最浅 */
+.field .f-key {
+  font-style: normal;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px; color: #9aa6b8; margin-left: 5px;
+}
+/* 会被 JS 改字的标签（本机 / 远端两种说法），和 f-key 同行互不覆盖 */
+.field .f-lbl { font-style: normal; }
 .field .secret { position: relative; display: flex; }
 .field .secret input { flex: 1; min-width: 0; padding-right: 46px; }
 .eye {
