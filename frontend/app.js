@@ -31,6 +31,7 @@ function esc(s) {
   return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 const isRemote = () => state.targets.active === "remote";
+const OS_GLYPH = { macos: "", windows: "⊞", linux: "🐧" };
 
 /* ---------- toast ---------- */
 function toast(text, kind = "ok") {
@@ -54,7 +55,6 @@ function setDirty(v) {
 
 function setBusy(b) {
   state.busy = b;
-  $("busy").classList.toggle("hidden", !b);
   document.querySelectorAll(".btn").forEach((el) => (el.disabled = b));
   if (!b && state.status) renderOverview(state.status);
 }
@@ -105,8 +105,9 @@ function renderTargetTabs() {
   $("ttabs").innerHTML = list.map((x) => {
     const isActive = (x.kind === "local" && active === "local") || (x.kind === "remote" && active === "remote" && x.name === activeName);
     const dot = isActive ? (state.status && state.status.running ? "run" : "off") : "";
+    const glyph = OS_GLYPH[x.os] || "";
     return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-name="${esc(x.name)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}">
-      <span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>
+      ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}"></span><span class="tt-label">${esc(x.name)}</span>
     </div>`;
   }).join("");
   document.querySelectorAll("#ttabs .ttab").forEach((el) =>
@@ -144,12 +145,14 @@ $("btn-add-target").addEventListener("click", async () => {
     port: $("t-port").value.trim() || "7400",
     user: $("t-user").value.trim(),
     password: $("t-pass").value,
+    os: $("t-os").value,
   };
   if (!args.name || !args.host) { toast("名称和主机必填", "err"); return; }
   const note = await call("add_target", args);
   if (note) {
     toast(note);
     ["t-name", "t-host", "t-port", "t-user", "t-pass"].forEach((i) => ($(i).value = ""));
+    $("t-os").value = "";
     await loadTargets();
     renderTargets();
   }
@@ -168,18 +171,32 @@ async function removeTarget(name) {
 }
 
 function renderTargets() {
+  const osOptions = (cur) => [["", "未知"], ["macos", "macOS"], ["windows", "Windows"], ["linux", "Linux"]]
+    .map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${l}</option>`)
+    .join("");
   $("target-rows").innerHTML = state.targets.list
     .filter((x) => x.kind === "remote")
     .map(
       (x) => `<div class="crow">
         <span style="width:150px"><b>${esc(x.name)}</b></span>
         <span class="flex1">${esc(x.host)}:${x.port}</span>
+        <select class="os-pick" data-name="${esc(x.name)}" style="width:86px">${osOptions(x.os || "")}</select>
         <button class="btn danger sm" data-name="${esc(x.name)}" style="width:60px">移除</button>
       </div>`
     )
-    .join("") || `<div class="hint" style="padding:6px 2px">暂无远端目标，添加后会出现在左侧「管理目标」</div>`;
+    .join("") || `<div class="hint" style="padding:6px 2px">暂无远端目标，添加后会出现在「隧道管理」的目标标签上</div>`;
   document.querySelectorAll("#target-rows .btn").forEach((el) =>
     el.addEventListener("click", () => removeTarget(el.dataset.name))
+  );
+  document.querySelectorAll("#target-rows .os-pick").forEach((el) =>
+    el.addEventListener("change", async () => {
+      const note = await call("set_target_os", { name: el.dataset.name, os: el.value });
+      if (note) {
+        toast(note);
+        await loadTargets();
+        renderTargets();
+      }
+    })
   );
 }
 
@@ -197,6 +214,13 @@ async function refreshStatus() {
     ? `● ${esc(s.targetName)} · frpc 运行中${s.mode === "local" ? " · PID " + s.pid : ""}`
     : `● ${esc(s.targetName)} · frpc 不可达`;
   side.classList.toggle("off", !s.running);
+  const proc = $("chip-proc");
+  if (s.procStats) {
+    proc.textContent = `frpc 内存 ${s.procStats.rssMb}MB · CPU ${s.procStats.cpuPct}% · 运行 ${s.procStats.etime}`;
+    proc.classList.remove("hidden");
+  } else {
+    proc.classList.add("hidden");
+  }
   renderTargetTabs();
   renderTunnels();
   if (state.page === "config") renderOverview(s);
@@ -256,7 +280,7 @@ function renderTunnels() {
         <span class="col-local">${esc(p.localAddr || "—")}</span>
         <span class="col-remote">${esc(p.remoteAddr || "—")}</span>
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}">● ${running ? "运行中" : esc(p.status)}</span></span>
-        <span class="col-err" title="${esc(p.err)}">${esc(p.err)}</span>
+        <span class="col-err${p.err ? " err-link" : ""}" ${p.err ? 'title="点击查看日志排查" ' : ""}data-err="${esc(p.err)}">${esc(p.err)}</span>
         <span class="col-edit"><button class="btn icon edit" data-name="${esc(p.name)}" title="到配置页编辑">✎</button></span>
       </div>`;
     })
@@ -264,7 +288,14 @@ function renderTunnels() {
   box.querySelectorAll(".edit").forEach((el) =>
     el.addEventListener("click", () => {
       showPage("config");
-      toast(`编辑「${el.dataset.name}」：在隧道列表中删除，或用「新增隧道」重建`, "info");
+      toast(`编辑「${el.dataset.name}」：在隧道列表中删除，再用「新建隧道」重建`, "info");
+    })
+  );
+  box.querySelectorAll(".err-link").forEach((el) =>
+    el.addEventListener("click", () => {
+      if (isRemote()) { toast("远端不支持查看日志，请 SSH 到目标机排查", "info"); return; }
+      showPage("logs");
+      toast("已跳到日志页，可切换 stdout / stderr 排查该报错", "info");
     })
   );
 }

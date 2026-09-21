@@ -4,9 +4,9 @@ mod backend;
 
 use backend::{
     apply_basics, detect_target, fetch_config, fetch_status, frpc_pid, load_remotes, parse_basics,
-    parse_proxies, put_config, read_config_file, remove_proxy, restart, restore_config_from_backup,
-    save_config, save_remotes, start, stop, tail, validate_host, wait_ready, Basics as BackendBasics,
-    Endpoint, NewProxy, RemoteTarget, Target,
+    parse_proxies, proc_stats, put_config, read_config_file, remove_proxy, restart,
+    restore_config_from_backup, save_config, save_remotes, start, stop, tail, validate_host,
+    wait_ready, Basics as BackendBasics, Endpoint, NewProxy, RemoteTarget, Target,
 };
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -115,17 +115,29 @@ async fn pull_staged(state: &AppState) -> Result<String, String> {
     }
 }
 
+fn local_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    }
+}
+
+fn valid_os(s: &str) -> bool {
+    matches!(s, "" | "macos" | "windows" | "linux")
+}
+
 #[tauri::command]
 async fn get_targets(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let a = active_of(&state);
     let mut list = Vec::new();
     if state.local.is_some() {
-        list.push(serde_json::json!({ "kind": "local", "name": "本机", "host": "127.0.0.1" }));
+        list.push(serde_json::json!({ "kind": "local", "name": "本机", "host": "127.0.0.1", "os": local_os() }));
     }
     let rs = state.remotes.lock().unwrap();
     for r in rs.iter() {
         list.push(serde_json::json!({
-            "kind": "remote", "name": r.name, "host": r.host, "port": r.port,
+            "kind": "remote", "name": r.name, "host": r.host, "port": r.port, "os": r.os,
         }));
     }
     let active_name = match &a {
@@ -184,6 +196,7 @@ async fn add_target(
     port: String,
     user: String,
     password: String,
+    os: Option<String>,
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -194,12 +207,17 @@ async fn add_target(
     if user.trim().is_empty() {
         return Err("webServer 用户名不能为空".into());
     }
+    let os = os.unwrap_or_default();
+    if !valid_os(&os) {
+        return Err("机器类型不合法".into());
+    }
     let r = RemoteTarget {
         name: name.clone(),
         host: host.trim().to_string(),
         port,
         user: user.trim().to_string(),
         password,
+        os,
     };
     let ep = r.endpoint();
     if state
@@ -221,6 +239,25 @@ async fn add_target(
     rs.push(r);
     save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
     Ok(format!("已添加远端目标「{name}」"))
+}
+
+#[tauri::command]
+async fn set_target_os(
+    state: State<'_, AppState>,
+    name: String,
+    os: String,
+) -> Result<String, String> {
+    if !valid_os(&os) {
+        return Err("机器类型不合法".into());
+    }
+    let mut rs = state.remotes.lock().unwrap();
+    let r = rs
+        .iter_mut()
+        .find(|r| r.name == name)
+        .ok_or_else(|| format!("远端目标 {name} 不存在"))?;
+    r.os = os.clone();
+    save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("已更新「{name}」的机器类型"))
 }
 
 #[tauri::command]
@@ -254,9 +291,10 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     let staged = state.staged.lock().unwrap().clone();
     let ep2 = ep.clone();
     let t2 = t.clone();
-    let (status, pid, saved_at) = tauri::async_runtime::spawn_blocking(move || {
+    let (status, pid, saved_at, stats) = tauri::async_runtime::spawn_blocking(move || {
         let list = fetch_status(&ep2);
         let pid = if is_local { frpc_pid() } else { None };
+        let stats = pid.and_then(proc_stats);
         let saved = t2
             .as_ref()
             .and_then(|t| {
@@ -273,7 +311,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                     .map(|s| s.trim().to_string())
             })
             .unwrap_or_default();
-        (list, pid, saved)
+        (list, pid, saved, stats)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -308,6 +346,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "webUrl": ep.base_url,
         "configPath": t.map(|t| t.config_path.display().to_string()).unwrap_or_default(),
         "savedAt": saved_at,
+        "procStats": stats.map(|(rss_mb, cpu, etime)| serde_json::json!({ "rssMb": (rss_mb * 10.0).round() / 10.0, "cpuPct": cpu, "etime": etime })),
     }))
 }
 
@@ -531,6 +570,7 @@ fn main() {
             get_targets,
             set_target,
             add_target,
+            set_target_os,
             remove_target,
             get_status,
             get_config,

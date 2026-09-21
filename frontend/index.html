@@ -38,7 +38,7 @@
       <div class="head-actions">
         <span class="ha ha-tunnels">
           <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" placeholder="搜索名称、本地或映射地址..." /></span>
-          <button id="btn-refresh" class="btn icon" title="刷新">⟳</button>
+          <button id="btn-refresh" class="btn square" title="刷新">⟳</button>
           <button id="btn-save" class="btn">保存</button>
           <button id="btn-new" class="btn primary">+ 新建隧道</button>
         </span>
@@ -46,7 +46,6 @@
           <button id="btn-reload" class="btn">重新加载</button>
           <button id="btn-apply" class="btn primary">保存并重启 frpc</button>
         </span>
-        <span id="busy" class="busy hidden">操作…</span>
       </div>
     </header>
 
@@ -59,6 +58,7 @@
             <div class="chips">
               <span id="chip-run" class="chip ok">● 运行中</span>
               <span id="chip-cnt" class="chip">隧道 0 / 0</span>
+              <span id="chip-proc" class="chip hidden"></span>
             </div>
           </div>
           <div class="thead">
@@ -143,9 +143,12 @@
           <div class="row gap">
             <label class="field"><span>user</span><input id="t-user" placeholder="admin" /></label>
             <label class="field"><span>password</span><input id="t-pass" type="password" /></label>
+            <label class="field narrow"><span>机器类型</span>
+              <select id="t-os"><option value="">自动/未知</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+            </label>
             <button id="btn-add-target" class="btn" style="align-self:flex-end">添加并测试</button>
           </div>
-          <div class="hint">凭据保存在 ~/.config/frp-client/app.toml（0600），仅本机可读</div>
+          <div class="hint">frpc API 不返回系统信息，机器类型仅作展示用图标；凭据保存在 ~/.config/frp-client/app.toml（0600），仅本机可读</div>
         </div>
       </div>
       <div class="row right">

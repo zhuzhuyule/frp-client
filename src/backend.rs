@@ -104,6 +104,8 @@ pub struct RemoteTarget {
     pub port: u16,
     pub user: String,
     pub password: String,
+    /// 机器类型（frpc API 探测不到 OS，由用户标注）："macos" | "windows" | "linux" | ""（未知）
+    pub os: String,
 }
 
 impl RemoteTarget {
@@ -174,6 +176,7 @@ pub fn load_remotes() -> Result<Vec<RemoteTarget>> {
                 port: port.clamp(1, 65535) as u16,
                 user: s("user"),
                 password: s("password"),
+                os: s("os"),
             });
         }
     }
@@ -196,6 +199,9 @@ pub fn save_remotes(rs: &[RemoteTarget]) -> Result<()> {
         tbl["port"] = value(r.port as i64);
         tbl["user"] = value(r.user.as_str());
         tbl["password"] = value(r.password.as_str());
+        if !r.os.is_empty() {
+            tbl["os"] = value(r.os.as_str());
+        }
         aot.push(tbl);
     }
     doc["remote"] = Item::ArrayOfTables(aot);
@@ -316,6 +322,23 @@ pub fn frpc_pid() -> Option<u32> {
         .lines()
         .next()
         .and_then(|l| l.trim().parse().ok())
+}
+
+/// 本机进程指标：(RSS MB, CPU %, 运行时长)，来自 ps，无需额外依赖
+pub fn proc_stats(pid: u32) -> Option<(f64, f64, String)> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=,%cpu=,etime=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut it = text.split_whitespace();
+    let rss_mb = it.next()?.parse::<f64>().ok()? / 1024.0;
+    let cpu = it.next()?.parse::<f64>().ok()?;
+    let etime = it.next()?.to_string();
+    Some((rss_mb, cpu, etime))
 }
 
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
@@ -862,6 +885,14 @@ remotePort = 2222
             port: 7400,
             user: "admin".into(),
             password: "pw".into(),
+            os: "macos".into(),
+        }, RemoteTarget {
+            name: "win-box".into(),
+            host: "192.168.3.11".into(),
+            port: 7400,
+            user: "admin".into(),
+            password: "pw2".into(),
+            os: String::new(),
         }];
         save_remotes(&rs).unwrap();
         let got = load_remotes().unwrap();

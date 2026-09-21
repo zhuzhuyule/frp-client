@@ -104,7 +104,7 @@ body {
 .busy { color: var(--muted); font-size: 12px; }
 
 .search-wrap { position: relative; display: inline-flex; align-items: center; }
-.search-ico { position: absolute; left: 10px; color: var(--faint); font-size: 14px; pointer-events: none; }
+.search-ico { position: absolute; left: 9px; color: var(--muted); font-size: 17px; line-height: 1; pointer-events: none; }
 .search {
   width: 250px; height: 34px; border-radius: 9px;
   border: 1px solid #d8dee9; background: #fff; padding: 0 12px 0 30px;
@@ -140,6 +140,7 @@ body {
   color: var(--muted); font-size: 14px;
 }
 .btn.icon:hover { color: var(--primary); background: var(--primary-soft); }
+.btn.square { width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
 
 /* ---------- pages ---------- */
 .page { display: none; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
@@ -192,7 +193,7 @@ body {
 .tt-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ttabs {
   display: flex; align-items: flex-end; gap: 5px;
-  padding: 0 10px; border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #dfe5ef;
   position: relative; z-index: 1;
 }
 .ttab {
@@ -209,6 +210,7 @@ body {
   border-color: #dfe5ef; border-bottom-color: #fff;
 }
 .tt-label { overflow: hidden; text-overflow: ellipsis; }
+.tt-os { font-size: 12.5px; opacity: .95; }
 .tt-dot { width: 7px; height: 7px; min-width: 7px; border-radius: 50%; background: #c9d2e0; }
 .ttab.active .tt-dot.run { background: var(--ok); box-shadow: 0 0 5px rgba(22, 163, 74, 0.5); }
 .ttab.active .tt-dot.off { background: var(--danger); }
@@ -229,6 +231,11 @@ body {
 .col-remote { width: 200px; }
 .col-status { width: 104px; }
 .col-err { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); font-size: 12px; }
+.col-err.err-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.crow select {
+  height: 26px; border-radius: 7px; border: 1px solid #d8dee9;
+  font-size: 11.5px; color: var(--text); background: #fff; outline: none;
+}
 .col-edit { width: 48px; display: flex; justify-content: center; }
 
 .trow {
