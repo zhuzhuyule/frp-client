@@ -37,9 +37,8 @@ pub fn gui_domain() -> String {
     format!("gui/{uid}")
 }
 
-pub fn detect_target() -> Result<Target> {
-    let config_path = PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH));
-    let src = std::fs::read_to_string(&config_path)
+fn target_from_config(config_path: &Path) -> Result<Target> {
+    let src = std::fs::read_to_string(config_path)
         .with_context(|| format!("无法读取 {}", config_path.display()))?;
     let doc = src
         .parse::<DocumentMut>()
@@ -68,26 +67,63 @@ pub fn detect_target() -> Result<Target> {
 
     let web_addr = get_str(&["webServer", "addr"], "127.0.0.1");
     let web_port = get_int(&["webServer", "port"], 7400);
+    // 每个实例的日志位置不同，优先用配置里的 logging.to
+    let log_cfg = get_str(&["logging", "to"], "");
+    let log_default = if log_cfg.is_empty() { DEFAULT_LOG_PATH } else { &log_cfg };
 
     Ok(Target {
-        config_path,
-        log_path: PathBuf::from(env_or("FRPC_LOG_PATH", DEFAULT_LOG_PATH)),
+        config_path: config_path.to_path_buf(),
+        log_path: PathBuf::from(env_or("FRPC_LOG_PATH", log_default)),
         err_path: PathBuf::from(env_or("FRPC_ERR_PATH", DEFAULT_ERR_PATH)),
         launchd_label: env_or("FRPC_LAUNCHD_LABEL", DEFAULT_LAUNCHD_LABEL),
-        plist_path: {
-            let raw = env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH);
-            match raw.strip_prefix("~/") {
-                Some(rest) => {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-                    PathBuf::from(home).join(rest)
-                }
-                None => PathBuf::from(raw),
-            }
-        },
-        base_url: format!("http://{web_addr}:{web_port}"),
+        plist_path: expand_tilde(&env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH)),
+        base_url: format!(
+            "http://{}:{}",
+            local_console_addr(&web_addr),
+            web_port
+        ),
         user: get_str(&["webServer", "user"], ""),
         password: get_str(&["webServer", "password"], ""),
     })
+}
+
+fn expand_tilde(raw: &str) -> PathBuf {
+    match raw.strip_prefix("~/") {
+        Some(rest) => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+            PathBuf::from(home).join(rest)
+        }
+        None => PathBuf::from(raw),
+    }
+}
+
+/// 本机网卡上的地址（`ifconfig -a` 里的 inet 行）
+pub fn local_interface_ips() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("ifconfig").arg("-a").output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            let rest = t.strip_prefix("inet ")?;
+            rest.split_whitespace().next().map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// 本机实例的控制台地址：配置里可能写的是别的机器的 IP（那是在那台机器上生成的配置），
+/// 连不上自己，所以只有当它确实是本机网卡地址时才沿用，否则走回环。
+pub fn local_console_addr(configured: &str) -> String {
+    let a = configured.trim();
+    if a.is_empty() || a == "0.0.0.0" || a == "::" || a.starts_with("127.") {
+        return "127.0.0.1".to_string();
+    }
+    if local_interface_ips().iter().any(|ip| ip == a) {
+        a.to_string()
+    } else {
+        "127.0.0.1".to_string()
+    }
 }
 
 // ---------- remote targets (app-owned config) ----------
@@ -189,7 +225,11 @@ pub fn save_remotes(rs: &[RemoteTarget]) -> Result<()> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("创建 {} 失败", dir.display()))?;
     }
-    let mut doc = DocumentMut::new();
+    // 保留文件里的其它表（如 [local]），只整体替换 [[remote]]
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Err(_) => DocumentMut::new(),
+    };
     let mut aot = ArrayOfTables::new();
     for r in rs {
         let mut tbl = Table::new();
@@ -205,8 +245,94 @@ pub fn save_remotes(rs: &[RemoteTarget]) -> Result<()> {
         aot.push(tbl);
     }
     doc["remote"] = Item::ArrayOfTables(aot);
+    write_app_doc(&doc)
+}
 
+/// 本机目标的探测结果
+/// 用户为某个本机实例保存的标注：改名、补凭据、手动添加的实例
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LocalSaved {
+    pub config_path: String,
+    pub name: String,
+    pub addr: String,
+    pub port: String,
+    pub user: String,
+    pub password: String,
+}
+
+pub fn load_locals() -> Vec<LocalSaved> {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return Vec::new();
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return Vec::new();
+    };
+    let Some(Item::ArrayOfTables(aot)) = doc.get("local") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for tbl in aot.iter() {
+        let s = |k: &str| -> String {
+            tbl.get(k)
+                .and_then(|it| it.as_value())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let cfg = s("configPath");
+        if !cfg.is_empty() {
+            out.push(LocalSaved {
+                config_path: cfg,
+                name: s("name"),
+                addr: s("addr"),
+                port: s("port"),
+                user: s("user"),
+                password: s("password"),
+            });
+        }
+    }
+    out
+}
+
+pub fn save_locals(items: &[LocalSaved]) -> Result<()> {
+    let path = app_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("创建 {} 失败", dir.display()))?;
+    }
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Err(_) => DocumentMut::new(),
+    };
+    let mut aot = ArrayOfTables::new();
+    for it in items {
+        let mut tbl = Table::new();
+        tbl.set_implicit(false);
+        tbl["configPath"] = value(it.config_path.as_str());
+        for (k, v) in [
+            ("name", &it.name),
+            ("addr", &it.addr),
+            ("port", &it.port),
+            ("user", &it.user),
+            ("password", &it.password),
+        ] {
+            if !v.is_empty() {
+                tbl[k] = value(v.as_str());
+            }
+        }
+        aot.push(tbl);
+    }
+    if aot.is_empty() {
+        doc.remove("local");
+    } else {
+        doc["local"] = Item::ArrayOfTables(aot);
+    }
+    write_app_doc(&doc)
+}
+
+fn write_app_doc(doc: &DocumentMut) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    let path = app_config_path();
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).context("写 app.toml 失败")?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
@@ -214,6 +340,174 @@ pub fn save_remotes(rs: &[RemoteTarget]) -> Result<()> {
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("替换 {} 失败", path.display()))?;
     Ok(())
+}
+
+/// 本机一个 frpc 实例：配置文件 + 控制台凭据 + 运行状态
+#[derive(Clone, Debug)]
+pub struct LocalInstance {
+    /// 稳定标识，就是配置文件的绝对路径
+    pub id: String,
+    pub name: String,
+    pub target: Target,
+    /// 只有 LaunchAgent 监督的那个实例允许 App 启停
+    pub managed: bool,
+    pub pid: Option<u32>,
+    /// 配置里没有可用的 webServer 凭据，需要用户补全
+    pub need_creds: bool,
+}
+
+/// 常见安装位置的 frpc.toml
+pub fn local_config_candidates() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+    vec![
+        PathBuf::from(DEFAULT_CONFIG_PATH),
+        PathBuf::from("/usr/local/etc/frpc/frpc.toml"),
+        PathBuf::from("/etc/frp/frpc.toml"),
+        PathBuf::from(home.clone()).join(".config/frpc/frpc.toml"),
+        PathBuf::from(home.clone()).join(".config/frpc.toml"),
+        PathBuf::from(home).join("frpc.toml"),
+    ]
+}
+
+fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
+    if !v.contains(&p) {
+        v.push(p);
+    }
+}
+
+fn cn_num(i: usize) -> String {
+    ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+        .get(i.wrapping_sub(1))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| i.to_string())
+}
+
+/// 从 frpc 的命令行参数里取 `-c <path>` / `--config <path>` / `--config=<path>`
+fn config_path_from_args(args: &str) -> Option<PathBuf> {
+    let mut it = args.split_whitespace();
+    while let Some(t) = it.next() {
+        if t == "-c" || t == "--config" {
+            if let Some(v) = it.next() {
+                return Some(PathBuf::from(v));
+            }
+        }
+        if let Some(v) = t
+            .strip_prefix("--config=")
+            .or_else(|| if t.starts_with("-c/") { t.strip_prefix("-c") } else { None })
+        {
+            if !v.is_empty() {
+                return Some(PathBuf::from(v));
+            }
+        }
+    }
+    None
+}
+
+/// 正在运行的 frpc：(pid, 它用的配置路径)
+pub fn running_frpcs() -> Vec<(u32, PathBuf)> {
+    let fallback = PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH));
+    frpc_pids()
+        .into_iter()
+        .filter_map(|pid| {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "args=", "-p", &pid.to_string()])
+                .output()
+                .ok()?;
+            let args = String::from_utf8_lossy(&out.stdout).to_string();
+            Some((pid, config_path_from_args(&args).unwrap_or_else(|| fallback.clone())))
+        })
+        .collect()
+}
+
+/// LaunchAgent 里监督的那个配置路径（决定哪个实例可被 App 启停）
+pub fn managed_config_path() -> PathBuf {
+    let plist = expand_tilde(&env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH));
+    if let Ok(src) = std::fs::read_to_string(&plist) {
+        for seg in src.split("<string>") {
+            let v = seg.split("</string>").next().unwrap_or("").trim();
+            if v.ends_with(".toml") {
+                return PathBuf::from(v);
+            }
+        }
+    }
+    PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH))
+}
+
+/// 配置读不动时的兜底目标：只能靠用户补全控制台信息
+fn fallback_target(config_path: &Path) -> Target {
+    Target {
+        config_path: config_path.to_path_buf(),
+        log_path: PathBuf::from(env_or("FRPC_LOG_PATH", DEFAULT_LOG_PATH)),
+        err_path: PathBuf::from(env_or("FRPC_ERR_PATH", DEFAULT_ERR_PATH)),
+        launchd_label: env_or("FRPC_LAUNCHD_LABEL", DEFAULT_LAUNCHD_LABEL),
+        plist_path: expand_tilde(&env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH)),
+        base_url: "http://127.0.0.1:7400".to_string(),
+        user: String::new(),
+        password: String::new(),
+    }
+}
+
+/// 发现本机所有 frpc 实例：运行中的进程 → LaunchAgent 监督项 → 用户手工添加项 → 常见路径兜底
+pub fn discover_locals() -> Vec<LocalInstance> {
+    let saved = load_locals();
+    let running = running_frpcs();
+    let managed = managed_config_path();
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for (_, p) in &running {
+        push_unique(&mut paths, p.clone());
+    }
+    if managed.exists() {
+        push_unique(&mut paths, managed.clone());
+    }
+    for s in &saved {
+        let p = PathBuf::from(&s.config_path);
+        if p.exists() {
+            push_unique(&mut paths, p);
+        }
+    }
+    if paths.is_empty() {
+        if let Some(p) = local_config_candidates().into_iter().find(|p| p.exists()) {
+            paths.push(p);
+        }
+    }
+
+    let mut out: Vec<LocalInstance> = Vec::new();
+    for p in paths {
+        let mut t = target_from_config(&p).unwrap_or_else(|_| fallback_target(&p));
+        let s = saved.iter().find(|s| PathBuf::from(&s.config_path) == p);
+        if let Some(s) = s {
+            if !s.user.trim().is_empty() {
+                t.user = s.user.trim().to_string();
+            }
+            if !s.password.is_empty() {
+                t.password = s.password.clone();
+            }
+            if !s.addr.trim().is_empty() {
+                let port = if s.port.trim().is_empty() { "7400" } else { s.port.trim() };
+                t.base_url = format!("http://{}:{}", s.addr.trim(), port);
+            }
+        }
+        out.push(LocalInstance {
+            id: p.display().to_string(),
+            name: s.map(|s| s.name.clone()).unwrap_or_default(),
+            target: t,
+            managed: p == managed,
+            pid: running.iter().find(|(_, rp)| *rp == p).map(|(pid, _)| *pid),
+            need_creds: false,
+        });
+    }
+    for it in out.iter_mut() {
+        it.need_creds = it.target.user.is_empty() || it.target.password.is_empty();
+    }
+    out.sort_by(|a, b| b.managed.cmp(&a.managed).then(a.id.cmp(&b.id)));
+    let n = out.len();
+    for (i, it) in out.iter_mut().enumerate() {
+        if it.name.is_empty() {
+            it.name = if n == 1 { "本机".into() } else { format!("本机{}", cn_num(i + 1)) };
+        }
+    }
+    out
 }
 
 // ---------- runtime status (webServer API) ----------
@@ -316,12 +610,14 @@ pub fn put_config(e: &Endpoint, toml_src: &str) -> Result<()> {
 
 // ---------- process control (launchd) ----------
 
-pub fn frpc_pid() -> Option<u32> {
-    let out = std::process::Command::new("pgrep").arg("-x").arg("frpc").output().ok()?;
+pub fn frpc_pids() -> Vec<u32> {
+    let Ok(out) = std::process::Command::new("pgrep").arg("-x").arg("frpc").output() else {
+        return Vec::new();
+    };
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .next()
-        .and_then(|l| l.trim().parse().ok())
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
 }
 
 /// 本机进程指标：(RSS MB, CPU %, 运行时长)，来自 ps，无需额外依赖
@@ -1006,6 +1302,21 @@ remotePort = 2222
         save_remotes(&rs).unwrap();
         let got = load_remotes().unwrap();
         assert_eq!(got, rs);
+        // [[local]] 与 [[remote]] 共存，互不覆盖（两个测试若并行改 HOME 会互串，故合并为一个）
+        let ls = vec![LocalSaved {
+            config_path: "/tmp/a.toml".into(),
+            name: "本机一".into(),
+            addr: "127.0.0.1".into(),
+            port: "7500".into(),
+            user: "u".into(),
+            password: "p".into(),
+        }];
+        save_locals(&ls).unwrap();
+        assert_eq!(load_remotes().unwrap(), rs);
+        assert_eq!(load_locals(), ls);
+        save_remotes(&[]).unwrap();
+        assert_eq!(load_locals(), ls);
+        assert!(load_remotes().unwrap().is_empty());
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(app_config_path()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
@@ -1014,18 +1325,53 @@ remotePort = 2222
     }
 
     #[test]
+    fn local_console_addr_falls_back_to_loopback() {
+        assert_eq!(local_console_addr(""), "127.0.0.1");
+        assert_eq!(local_console_addr("0.0.0.0"), "127.0.0.1");
+        assert_eq!(local_console_addr("::"), "127.0.0.1");
+        assert_eq!(local_console_addr("127.0.0.1"), "127.0.0.1");
+        // TEST-NET-3 不可能出现在真实网卡上
+        assert_eq!(local_console_addr("203.0.113.77"), "127.0.0.1");
+    }
+
+    #[test]
+    fn config_path_from_args_variants() {
+        assert_eq!(
+            config_path_from_args("frpc -c /etc/frpc.toml"),
+            Some(PathBuf::from("/etc/frpc.toml"))
+        );
+        assert_eq!(
+            config_path_from_args("frpc --config /x/y.toml"),
+            Some(PathBuf::from("/x/y.toml"))
+        );
+        assert_eq!(
+            config_path_from_args("frpc --config=/z.toml"),
+            Some(PathBuf::from("/z.toml"))
+        );
+        assert_eq!(config_path_from_args("frpc check"), None);
+    }
+
+    #[test]
     #[ignore = "需要本机 frpc 正在运行；只读，不会改动配置"]
     fn live_frpc_readonly() {
-        let t = detect_target().unwrap();
+        let locals = discover_locals();
+        assert!(!locals.is_empty(), "应至少识别到一个本机实例");
+        let t = locals[0].target.clone();
         assert!(t.base_url.starts_with("http://"));
         let ps = fetch_status(&t.endpoint()).unwrap();
         assert!(!ps.is_empty(), "应有运行中的隧道");
-        assert!(frpc_pid().is_some());
+        assert!(!frpc_pids().is_empty());
         let src = read_config_file(&t).unwrap();
         assert!(src.contains("[[proxies]]"));
         assert!(tail(&t.log_path, 5000).is_ok());
 
         let owners = local_port_owners();
+        for l in &locals {
+            println!(
+                "本机实例「{}」pid={:?} managed={} api={} needCreds={}",
+                l.name, l.pid, l.managed, l.target.base_url, l.need_creds
+            );
+        }
         for p in &ps {
             let port = p.local_addr.rsplit(':').next().and_then(|v| v.parse::<u16>().ok());
             let svc = port.and_then(|x| owners.get(&x));

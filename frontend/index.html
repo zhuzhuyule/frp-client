@@ -38,13 +38,15 @@
       <div class="head-actions">
         <span class="ha ha-tunnels">
           <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" placeholder="搜索名称、本地或映射地址..." /></span>
+          <button id="btn-manage" class="btn">◫ 管理目标</button>
           <button id="btn-refresh" class="btn square" title="刷新">⟳</button>
-          <button id="btn-save" class="btn">保存</button>
+          <button class="btn primary js-apply">保存并生效</button>
           <button id="btn-new" class="btn primary">+ 新建隧道</button>
         </span>
         <span class="ha ha-config">
           <button id="btn-reload" class="btn">重新加载</button>
-          <button id="btn-apply" class="btn primary">保存并重启 frpc</button>
+          <button id="btn-save" class="btn js-save" title="写入当前目标的配置文件（不重启）">保存</button>
+          <button class="btn primary js-apply">保存并生效</button>
         </span>
       </div>
     </header>
@@ -60,7 +62,13 @@
               <span id="chip-cnt" class="chip">隧道 0 / 0</span>
               <span id="chip-proc" class="chip hidden"></span>
             </div>
+            <div class="row gap" id="proc-btns">
+              <button id="btn-start" class="btn primary sm">启动</button>
+              <button id="btn-restart" class="btn sm">重启</button>
+              <button id="btn-stop" class="btn danger sm">停止</button>
+            </div>
           </div>
+          <div id="ov-line" class="ov-line"></div>
           <div class="thead">
             <span class="col-name">名称</span>
             <span class="col-local">本地 / 后台进程</span>
@@ -77,25 +85,8 @@
 
     <!-- ============ 配置预览 ============ -->
     <section id="page-config" class="page scroll">
+      <div id="ctabs" class="ttabs ctabs"></div>
       <div class="grid">
-        <div class="card" id="card-proc">
-          <div class="card-title">frpc 进程与连接</div>
-          <div class="stat-row">
-            <div class="stat-card"><div class="stat-label">运行状态</div><div id="st-run" class="stat-value">—</div></div>
-            <div class="stat-card"><div class="stat-label">进程 PID</div><div id="st-pid" class="stat-value">—</div></div>
-            <div class="stat-card"><div class="stat-label">隧道</div><div id="st-cnt" class="stat-value">—</div></div>
-            <div class="stat-card"><div class="stat-label">管理 API</div><div id="st-api" class="stat-value">—</div></div>
-          </div>
-          <div class="kv"><span class="k">服务端</span><span id="i-server" class="v"></span></div>
-          <div class="kv"><span class="k">控制台</span><span id="i-web" class="v"></span></div>
-          <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
-          <div class="row gap" id="proc-btns" style="margin-top:10px">
-            <button id="btn-start" class="btn primary sm">启动</button>
-            <button id="btn-restart" class="btn sm">重启</button>
-            <button id="btn-stop" class="btn danger sm">停止</button>
-          </div>
-          <div class="hint remote-only hidden">远端目标不支持进程控制，请在目标机上操作 frpc。</div>
-        </div>
         <div class="card">
           <div class="card-title">服务端 / 认证</div>
           <div class="row gap">
@@ -119,36 +110,18 @@
             </label>
           </div>
           <div class="hint warn">webServer 绑非回环地址会把控制台暴露到网络（有密码保护），请确认是有意为之</div>
+          <div class="kv" style="margin-top:10px"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
+          <div class="kv"><span class="k">上次保存</span><span id="i-saved" class="v"></span></div>
         </div>
         <div class="card">
-          <div class="card-title">隧道（<span id="cfg-cnt">0</span> 条）</div>
-          <div class="thead small">
-            <span style="width:150px">名称</span>
-            <span style="width:56px">类型</span>
-            <span style="width:150px">本地 IP:端口</span>
-            <span style="width:86px">远程端口</span>
-            <span class="flex1">域名</span>
-            <span style="width:60px"></span>
+          <div class="card-title">隧道改动</div>
+          <div class="hint">隧道的查看、新建与删除都在「隧道管理」页进行；本页只编辑服务端与控制台参数。</div>
+          <div class="kv" style="margin-top:10px"><span class="k">当前目标</span><span id="i-target" class="v"></span></div>
+          <div class="kv"><span class="k">隧道数量</span><span id="i-tc" class="v"></span></div>
+          <div class="kv"><span class="k">控制台</span><span id="i-web" class="v"></span></div>
+          <div class="row gap" style="margin-top:12px">
+            <button id="btn-goto-tunnels" class="btn sm">→ 去隧道管理</button>
           </div>
-          <div id="cfg-rows"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">管理目标</div>
-          <div id="target-rows" class="target-rows"></div>
-          <div class="row gap">
-            <label class="field"><span>名称</span><input id="t-name" placeholder="Mac Mini" /></label>
-            <label class="field"><span>主机</span><input id="t-host" placeholder="192.168.3.10" /></label>
-            <label class="field narrow"><span>端口</span><input id="t-port" placeholder="7400" /></label>
-          </div>
-          <div class="row gap">
-            <label class="field"><span>user</span><input id="t-user" placeholder="admin" /></label>
-            <label class="field"><span>password</span><input id="t-pass" type="password" /></label>
-            <label class="field narrow"><span>机器类型</span>
-              <select id="t-os"><option value="">自动/未知</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
-            </label>
-            <button id="btn-add-target" class="btn" style="align-self:flex-end">添加并测试</button>
-          </div>
-          <div class="hint">frpc API 不返回系统信息，机器类型仅作展示用图标；凭据保存在 ~/.config/frp-client/app.toml（0600），仅本机可读</div>
         </div>
       </div>
       <div class="row right">
@@ -169,14 +142,14 @@
     <!-- ============ 日志 ============ -->
     <section id="page-logs" class="page col">
       <div class="card logbar" id="log-local">
-        <button id="log-out" class="btn primary sm">/tmp/frpc.log</button>
-        <button id="log-err" class="btn sm">/tmp/frpc.err</button>
+        <button id="log-out" class="btn primary sm">frpc.log</button>
+        <button id="log-err" class="btn sm">frpc.err</button>
         <button id="log-refresh" class="btn sm">刷新</button>
         <span id="log-path" class="flex1 right faint"></span>
       </div>
       <div class="card ai-card hidden" id="log-remote">
-        <div class="ai-title">远端目标不支持查看日志</div>
-        <div class="ai-sub">切换到「本机」目标查看本机日志，或 SSH 到远端机器查看其 frpc 日志。</div>
+        <div class="ai-title">远端目标 / 未托管实例不支持查看日志</div>
+        <div class="ai-sub">切换到受 LaunchAgent 监督的本机目标查看日志，或 SSH 到目标机器上查看其 frpc 日志。</div>
       </div>
       <pre id="log-box" class="raw flex1"></pre>
     </section>
@@ -206,10 +179,70 @@
       <label class="field"><span>remotePort</span><input id="n-remote-port" placeholder="tcp/udp 必填" /></label>
       <label class="field"><span>域名（http 用）</span><input id="n-domain" placeholder="a.example.com" /></label>
     </div>
-    <div class="hint">加入暂存列表后仍需点「保存」写入当前目标</div>
+    <div class="hint">加入暂存列表后仍需点「保存并生效」写入当前目标</div>
     <div class="modal-foot">
       <button id="btn-add-cancel" class="btn sm">取消</button>
       <button id="btn-add" class="btn primary sm">加入暂存</button>
+    </div>
+  </div>
+</div>
+<div id="targets-mask" class="mask hidden">
+  <div class="modal xwide">
+    <div class="modal-title">管理目标</div>
+
+    <div class="sec-title">本机 frpc 实例</div>
+    <div id="local-rows" class="target-rows"></div>
+    <div class="row gap" style="margin-top:8px">
+      <button id="btn-rescan" class="btn sm">⟳ 重新扫描本机</button>
+      <button id="btn-show-add-local" class="btn sm">＋ 手动添加本机实例</button>
+    </div>
+    <div id="add-local" class="subform hidden">
+      <div class="pgrid">
+        <label class="field wide"><span>配置文件路径</span><input id="l-cfg" placeholder="/opt/homebrew/etc/frpc/frpc.toml" /></label>
+        <label class="field"><span>名称（可选）</span><input id="l-name" placeholder="本机二" /></label>
+      </div>
+      <div class="pgrid">
+        <label class="field"><span>控制台地址（可选）</span><input id="l-addr" placeholder="127.0.0.1" /></label>
+        <label class="field narrow"><span>端口</span><input id="l-port" placeholder="7400" /></label>
+        <label class="field"><span>user</span><input id="l-user" placeholder="admin" /></label>
+        <label class="field"><span>password</span><input id="l-pass" type="password" /></label>
+      </div>
+      <div class="row gap">
+        <button id="btn-add-local" class="btn primary sm">添加</button>
+        <span class="flex1"></span>
+        <button class="btn sm js-hide-local">收起</button>
+      </div>
+      <div class="hint">路径可以从正在运行的 frpc 进程参数里自动探测；手动添加用于 App 读不到进程的情况。凭据存在 ~/.config/frp-client/app.toml（0600）。</div>
+    </div>
+
+    <div class="sec-title">远端 frpc 目标</div>
+    <div id="target-rows" class="target-rows"></div>
+    <div class="row gap" style="margin-top:8px">
+      <button id="btn-show-add-remote" class="btn sm">＋ 添加远端目标</button>
+    </div>
+    <div id="add-remote" class="subform hidden">
+      <div class="pgrid">
+        <label class="field"><span>名称</span><input id="t-name" placeholder="Mac Mini" /></label>
+        <label class="field"><span>主机</span><input id="t-host" placeholder="192.168.3.10" /></label>
+        <label class="field narrow"><span>端口</span><input id="t-port" placeholder="7400" /></label>
+      </div>
+      <div class="pgrid">
+        <label class="field"><span>user</span><input id="t-user" placeholder="admin" /></label>
+        <label class="field"><span>password</span><input id="t-pass" type="password" /></label>
+        <label class="field narrow"><span>机器类型</span>
+          <select id="t-os"><option value="">自动/未知</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+        </label>
+      </div>
+      <div class="row gap">
+        <button id="btn-add-target" class="btn primary sm">添加并测试</button>
+        <span class="flex1"></span>
+        <button class="btn sm js-hide-remote">收起</button>
+      </div>
+      <div class="hint">frpc API 不返回系统信息，机器类型仅作展示用图标；远端只读状态与热加载配置，不能控制进程。</div>
+    </div>
+
+    <div class="modal-foot">
+      <button id="btn-close-targets" class="btn sm">关闭</button>
     </div>
   </div>
 </div>

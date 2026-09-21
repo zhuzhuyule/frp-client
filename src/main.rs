@@ -3,11 +3,11 @@
 mod backend;
 
 use backend::{
-    apply_basics, detect_target, fetch_config, fetch_status, frpc_pid, load_remotes,
+    apply_basics, discover_locals, fetch_config, fetch_status, load_locals, load_remotes,
     local_port_owners, parse_basics, parse_proxies, proc_stats, put_config, read_config_file,
-    remove_proxy, restart, restore_config_from_backup, save_config, save_remotes, start, stop,
-    tail, validate_host, wait_ready, Basics as BackendBasics, Endpoint, NewProxy, RemoteTarget,
-    Target,
+    remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
+    save_remotes, start, stop, tail, validate_host, wait_ready, Basics as BackendBasics, Endpoint,
+    LocalInstance, LocalSaved, NewProxy, RemoteTarget,
 };
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -16,12 +16,12 @@ use tauri::State;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Active {
-    Local,
+    Local(String), // 本机实例 id（= 配置文件路径）
     Remote(String), // remote 的 name
 }
 
 pub struct AppState {
-    local: Option<Target>,
+    locals: Mutex<Vec<LocalInstance>>,
     remotes: Mutex<Vec<RemoteTarget>>,
     active: Mutex<Active>,
     staged: Mutex<String>,
@@ -64,11 +64,15 @@ struct NewProxyDto {
     domain: String,
 }
 
-fn local_target(state: &AppState) -> Result<&Target, String> {
+fn local_instance(state: &AppState, id: &str) -> Result<LocalInstance, String> {
     state
-        .local
-        .as_ref()
-        .ok_or_else(|| "未找到本机 frpc.toml".to_string())
+        .locals
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|x| x.id == id)
+        .cloned()
+        .ok_or_else(|| "该本机实例已不存在，请重新扫描".to_string())
 }
 
 fn active_of(state: &AppState) -> Active {
@@ -79,8 +83,8 @@ fn active_of(state: &AppState) -> Active {
 fn active_endpoint(state: &AppState) -> Result<(Active, Endpoint), String> {
     let a = active_of(state);
     match &a {
-        Active::Local => {
-            let t = local_target(state)?;
+        Active::Local(id) => {
+            let t = local_instance(state, id)?.target;
             Ok((a, t.endpoint()))
         }
         Active::Remote(name) => {
@@ -108,8 +112,8 @@ where
 async fn pull_staged(state: &AppState) -> Result<String, String> {
     let (a, ep) = active_endpoint(state)?;
     match a {
-        Active::Local => {
-            let t = local_target(state)?.clone();
+        Active::Local(id) => {
+            let t = local_instance(state, &id)?.target;
             blocked(move || read_config_file(&t)).await
         }
         Active::Remote(_) => blocked(move || fetch_config(&ep)).await,
@@ -128,47 +132,111 @@ fn valid_os(s: &str) -> bool {
     matches!(s, "" | "macos" | "windows" | "linux")
 }
 
+fn host_port_of(base_url: &str) -> (String, String) {
+    let rest = base_url.split("://").nth(1).unwrap_or(base_url);
+    match rest.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.to_string()),
+        None => (rest.to_string(), String::new()),
+    }
+}
+
+/// 重新发现本机实例，并保证活动目标仍然有效
+async fn rescan(state: &AppState) -> Result<(), String> {
+    let list = tauri::async_runtime::spawn_blocking(discover_locals)
+        .await
+        .map_err(|e| e.to_string())?;
+    *state.locals.lock().unwrap() = list;
+    let a = active_of(state);
+    let ok = match &a {
+        Active::Local(id) => local_instance(state, id).is_ok(),
+        Active::Remote(name) => state.remotes.lock().unwrap().iter().any(|r| &r.name == name),
+    };
+    if !ok {
+        let next = {
+            let ls = state.locals.lock().unwrap();
+            ls.first().map(|x| Active::Local(x.id.clone()))
+        }
+        .or_else(|| {
+            state
+                .remotes
+                .lock()
+                .unwrap()
+                .first()
+                .map(|r| Active::Remote(r.name.clone()))
+        });
+        match next {
+            Some(n) => {
+                *state.active.lock().unwrap() = n;
+                let src = pull_staged(state).await.unwrap_or_default();
+                *state.staged.lock().unwrap() = src;
+            }
+            None => return Err("既没有本机实例也没有远端目标".into()),
+        }
+    }
+    Ok(())
+}
+
+fn upsert_local_saved(id: &str, f: impl FnOnce(&mut LocalSaved)) -> Result<(), String> {
+    let mut ls = load_locals();
+    match ls.iter_mut().find(|x| x.config_path == id) {
+        Some(x) => f(x),
+        None => {
+            let mut n = LocalSaved {
+                config_path: id.to_string(),
+                ..Default::default()
+            };
+            f(&mut n);
+            ls.push(n);
+        }
+    }
+    save_locals(&ls).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 async fn get_targets(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let a = active_of(&state);
     let mut list = Vec::new();
-    if state.local.is_some() {
-        list.push(serde_json::json!({ "kind": "local", "name": "本机", "host": "127.0.0.1", "os": local_os() }));
-    }
-    let rs = state.remotes.lock().unwrap();
-    for r in rs.iter() {
+    for l in state.locals.lock().unwrap().iter() {
+        let (host, port) = host_port_of(&l.target.base_url);
         list.push(serde_json::json!({
-            "kind": "remote", "name": r.name, "host": r.host, "port": r.port, "os": r.os,
+            "kind": "local", "id": l.id, "name": l.name, "host": host, "port": port,
+            "user": l.target.user, "os": local_os(), "managed": l.managed, "pid": l.pid,
+            "needCreds": l.need_creds, "configPath": l.id,
         }));
     }
-    let active_name = match &a {
-        Active::Local => "本机".to_string(),
-        Active::Remote(n) => n.clone(),
+    for r in state.remotes.lock().unwrap().iter() {
+        list.push(serde_json::json!({
+            "kind": "remote", "id": r.name, "name": r.name, "host": r.host, "port": r.port,
+            "os": r.os, "managed": false, "pid": null, "needCreds": false, "configPath": "",
+        }));
+    }
+    let (active_kind, active_id) = match &a {
+        Active::Local(id) => ("local", id.clone()),
+        Active::Remote(n) => ("remote", n.clone()),
     };
+    let active_name = list
+        .iter()
+        .find(|x| x["id"].as_str() == Some(active_id.as_str()))
+        .and_then(|x| x["name"].as_str())
+        .unwrap_or("")
+        .to_string();
     Ok(serde_json::json!({
-        "active": if a == Active::Local { "local" } else { "remote" },
-        "activeName": active_name,
-        "list": list,
+        "active": active_kind, "activeId": active_id, "activeName": active_name, "list": list,
     }))
 }
 
 #[tauri::command]
-async fn set_target(
-    state: State<'_, AppState>,
-    kind: String,
-    name: String,
-) -> Result<String, String> {
+async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Result<String, String> {
     let next = match kind.as_str() {
         "local" => {
-            local_target(&state)?;
-            Active::Local
+            local_instance(&state, &id)?;
+            Active::Local(id)
         }
         "remote" => {
-            let has = state.remotes.lock().unwrap().iter().any(|r| r.name == name);
-            if !has {
-                return Err(format!("远端目标 {name} 不存在"));
+            if !state.remotes.lock().unwrap().iter().any(|r| r.name == id) {
+                return Err(format!("远端目标 {id} 不存在"));
             }
-            Active::Remote(name)
+            Active::Remote(id)
         }
         other => return Err(format!("未知目标类型 {other}")),
     };
@@ -183,10 +251,146 @@ async fn set_target(
     };
     *state.staged.lock().unwrap() = staged;
     let label = match &next {
-        Active::Local => "本机".to_string(),
+        Active::Local(i) => local_instance(&state, i)?.name,
         Active::Remote(n) => n.clone(),
     };
     Ok(format!("已切换到目标「{label}」"))
+}
+
+/// 手动添加/更新一个本机实例（配置文件路径 + 可选的控制台凭据）
+#[tauri::command]
+async fn add_local(
+    state: State<'_, AppState>,
+    config_path: String,
+    name: Option<String>,
+    addr: Option<String>,
+    port: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<String, String> {
+    let path = config_path.trim();
+    if path.is_empty() {
+        return Err("配置文件路径不能为空".into());
+    }
+    // 与探测到的实例用同一套字面路径比较，所以这里不做 canonicalize（符号链接会改写路径）
+    let id = match path.strip_prefix("~/") {
+        Some(rest) => format!(
+            "{}/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            rest
+        ),
+        None => path.to_string(),
+    };
+    if !std::path::Path::new(&id).is_absolute() {
+        return Err("请填写绝对路径，例如 /opt/homebrew/etc/frpc/frpc.toml".into());
+    }
+    if !std::path::Path::new(&id).exists() {
+        return Err(format!("文件不存在：{id}"));
+    }
+    let name = name.unwrap_or_default().trim().to_string();
+    let addr = addr.unwrap_or_default().trim().to_string();
+    let port = port.unwrap_or_default().trim().to_string();
+    let user = user.unwrap_or_default().trim().to_string();
+    let password = password.unwrap_or_default();
+    if !addr.is_empty() {
+        validate_host(&addr).map_err(|e| format!("{e:#}"))?;
+    }
+    upsert_local_saved(&id, |s| {
+        if !name.is_empty() {
+            s.name = name.clone();
+        }
+        if !addr.is_empty() {
+            s.addr = addr.clone();
+            s.port = if port.is_empty() { "7400".into() } else { port.clone() };
+        }
+        if !user.is_empty() {
+            s.user = user.clone();
+        }
+        if !password.is_empty() {
+            s.password = password.clone();
+        }
+    })?;
+    rescan(&state).await?;
+    let found = local_instance(&state, &id).is_ok();
+    if found {
+        Ok(format!("已添加本机实例 {id}"))
+    } else {
+        Err("添加后未能识别该实例".into())
+    }
+}
+
+/// 补全/修改某个本机实例的控制台地址与凭据
+#[tauri::command]
+async fn set_local_console(
+    state: State<'_, AppState>,
+    id: String,
+    addr: String,
+    port: String,
+    user: String,
+    password: String,
+) -> Result<String, String> {
+    let addr = addr.trim().to_string();
+    let port = if port.trim().is_empty() { "7400".to_string() } else { port.trim().to_string() };
+    let user = user.trim().to_string();
+    validate_host(&addr).map_err(|e| format!("{e:#}"))?;
+    if user.is_empty() {
+        return Err("webServer 用户名不能为空".into());
+    }
+    upsert_local_saved(&id, |s| {
+        s.addr = addr.clone();
+        s.port = port.clone();
+        s.user = user.clone();
+        if !password.is_empty() {
+            s.password = password.clone();
+        }
+    })?;
+    rescan(&state).await?;
+    let inst = local_instance(&state, &id)?;
+    let ep = inst.target.endpoint();
+    let note = match blocked(move || fetch_status(&ep)).await {
+        Ok(list) => format!("已保存，控制台可达（{} 条隧道）", list.len()),
+        Err(e) => format!("已保存，但控制台仍不可达：{e}"),
+    };
+    if active_of(&state) == Active::Local(id.clone()) {
+        let src = pull_staged(&state).await.unwrap_or_default();
+        *state.staged.lock().unwrap() = src;
+    }
+    Ok(note)
+}
+
+#[tauri::command]
+async fn rename_local(state: State<'_, AppState>, id: String, name: String) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("名称不能为空".into());
+    }
+    local_instance(&state, &id)?;
+    upsert_local_saved(&id, |s| s.name = name.clone())?;
+    rescan(&state).await?;
+    Ok(format!("已改名为「{name}」"))
+}
+
+#[tauri::command]
+async fn remove_local(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let mut ls = load_locals();
+    let before = ls.len();
+    ls.retain(|x| x.config_path != id);
+    if ls.len() == before {
+        return Err("该实例没有可移除的标注（它是由进程或 LaunchAgent 探测到的）".into());
+    }
+    save_locals(&ls).map_err(|e| format!("{e:#}"))?;
+    rescan(&state).await?;
+    if local_instance(&state, &id).is_ok() {
+        return Ok("已移除标注，但该实例仍在运行或被 LaunchAgent 监督，会重新出现".to_string());
+    }
+    Ok("已移除本机实例标注".to_string())
+}
+
+#[tauri::command]
+async fn rescan_locals(state: State<'_, AppState>) -> Result<String, String> {
+    rescan(&state).await?;
+    let n = state.locals.lock().unwrap().len();
+    Ok(format!("已重新扫描，识别到 {n} 个本机实例"))
 }
 
 #[tauri::command]
@@ -272,31 +476,41 @@ async fn remove_target(state: State<'_, AppState>, name: String) -> Result<Strin
         }
         save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
     }
-    if active_of(&state) == Active::Remote(name.clone()) {
-        *state.active.lock().unwrap() = Active::Local;
-        let staged = pull_staged(&state).await.unwrap_or_default();
-        *state.staged.lock().unwrap() = staged;
-    }
+    // 若活动目标正是被删的那个，rescan 会挑一个仍然存在的目标顶上
+    rescan(&state).await?;
     Ok(format!("已移除远端目标「{name}」"))
 }
 
 #[tauri::command]
 async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let (a, ep) = active_endpoint(&state)?;
-    let is_local = a == Active::Local;
-    let t = if is_local {
-        Some(local_target(&state)?.clone())
-    } else {
-        None
+    let inst = match &a {
+        Active::Local(id) => Some(local_instance(&state, id)?),
+        Active::Remote(_) => None,
+    };
+    let is_local = inst.is_some();
+    let t = inst.as_ref().map(|x| x.target.clone());
+    let inst_id = match &a {
+        Active::Local(id) => id.clone(),
+        Active::Remote(n) => n.clone(),
     };
     let staged = state.staged.lock().unwrap().clone();
     let ep2 = ep.clone();
     let t2 = t.clone();
+    let inst_pid = inst.as_ref().and_then(|x| x.pid);
     let (status, pid, saved_at, stats, owners) = tauri::async_runtime::spawn_blocking(move || {
         let list = fetch_status(&ep2);
-        let pid = if is_local { frpc_pid() } else { None };
+        let pid = t2.as_ref().and_then(|t| {
+            let run = running_frpcs();
+            run.iter()
+                .find(|(_, p)| *p == t.config_path)
+                .or_else(|| {
+                    inst_pid.and_then(|want| run.iter().find(|(pid, _)| *pid == want))
+                })
+                .map(|(pid, _)| *pid)
+        });
         let stats = pid.and_then(proc_stats);
-        let owners = if is_local { local_port_owners() } else { Default::default() };
+        let owners = if t2.is_some() { local_port_owners() } else { Default::default() };
         let saved = t2
             .as_ref()
             .and_then(|t| {
@@ -352,9 +566,24 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         .filter(|p| p.get("status").and_then(|s| s.as_str()) == Some("running"))
         .count();
     let b = parse_basics(&staged).ok();
+    let log_err = inst
+        .as_ref()
+        .map(|i| {
+            (
+                i.target.log_path.display().to_string(),
+                i.target.err_path.display().to_string(),
+            )
+        })
+        .unwrap_or_default();
     Ok(serde_json::json!({
         "mode": if is_local { "local" } else { "remote" },
-        "targetName": match &a { Active::Remote(n) => n.clone(), Active::Local => "本机".to_string() },
+        "targetId": inst_id,
+        "targetName": match &a {
+            Active::Remote(n) => n.clone(),
+            Active::Local(_) => inst.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "本机".to_string()),
+        },
+        "managed": inst.as_ref().map(|i| i.managed).unwrap_or(false),
+        "needCreds": inst.as_ref().map(|i| i.need_creds).unwrap_or(false),
         "running": if is_local { pid.is_some() } else { api_reachable },
         "pid": pid.unwrap_or(0),
         "apiReachable": api_reachable,
@@ -365,6 +594,8 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "serverPort": b.as_ref().map(|x| x.server_port.clone()).unwrap_or_default(),
         "webUrl": ep.base_url,
         "configPath": t.map(|t| t.config_path.display().to_string()).unwrap_or_default(),
+        "logPath": log_err.0,
+        "errPath": log_err.1,
         "savedAt": saved_at,
         "procStats": stats.map(|(rss_mb, cpu, etime)| serde_json::json!({ "rssMb": (rss_mb * 10.0).round() / 10.0, "cpuPct": cpu, "etime": etime })),
     }))
@@ -457,8 +688,14 @@ async fn save_config_cmd(
     let basics = basics.into_backend();
     let new_src = apply_basics(&staged, &basics).map_err(|e| format!("{e:#}"))?;
     let (note, authoritative) = match a {
-        Active::Local => {
-            let t = local_target(&state)?.clone();
+        Active::Local(id) => {
+            let inst = local_instance(&state, &id)?;
+            if with_restart && !inst.managed {
+                return Err(
+                    "该实例不由本 App 的 LaunchAgent 监督，只能保存配置，请自行重启它".to_string()
+                );
+            }
+            let t = inst.target.clone();
             let new_src2 = new_src.clone();
             blocked(move || -> anyhow::Result<(String, String)> {
                 let bak = save_config(&t, &new_src2)?;
@@ -493,7 +730,7 @@ async fn save_config_cmd(
                             )),
                         }
                     }
-                } else if frpc_pid().is_some() {
+                } else {
                     note.push_str(" · 未重启，改动需重启后生效");
                 }
                 Ok((note, src))
@@ -515,10 +752,15 @@ async fn save_config_cmd(
 
 #[tauri::command]
 async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, String> {
-    if active_of(&state) != Active::Local {
-        return Err("远端目标不支持进程控制，请在目标机上操作".into());
+    let id = match active_of(&state) {
+        Active::Local(id) => id,
+        Active::Remote(_) => return Err("远端目标不支持进程控制，请在目标机上操作".into()),
+    };
+    let inst = local_instance(&state, &id)?;
+    if !inst.managed {
+        return Err("该实例不由本 App 的 LaunchAgent 监督，只能在配置页保存改动".into());
     }
-    let t = local_target(&state)?.clone();
+    let t = inst.target.clone();
     let note = blocked(move || -> anyhow::Result<String> {
         match action.as_str() {
             "start" => start(&t)?,
@@ -546,10 +788,13 @@ async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, 
 
 #[tauri::command]
 async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, String> {
-    if active_of(&state) != Active::Local {
-        return Err("远端目标不支持查看日志（需 SSH 到目标机查看）".into());
-    }
-    let t = local_target(&state)?.clone();
+    let id = match active_of(&state) {
+        Active::Local(id) => id,
+        Active::Remote(_) => {
+            return Err("远端目标不支持查看日志（需 SSH 到目标机查看）".into());
+        }
+    };
+    let t = local_instance(&state, &id)?.target;
     let path = if kind == "stderr" {
         t.err_path.clone()
     } else {
@@ -565,17 +810,15 @@ async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, St
 }
 
 fn main() {
-    let local = detect_target().ok();
+    let locals = discover_locals();
     let remotes = load_remotes().unwrap_or_default();
-    let active = if local.is_some() {
-        Active::Local
-    } else if let Some(r) = remotes.first() {
-        Active::Remote(r.name.clone())
-    } else {
-        Active::Local
-    };
+    let active = locals
+        .first()
+        .map(|x| Active::Local(x.id.clone()))
+        .or_else(|| remotes.first().map(|r| Active::Remote(r.name.clone())))
+        .unwrap_or_else(|| Active::Local(String::new()));
     let state = AppState {
-        local,
+        locals: Mutex::new(locals),
         remotes: Mutex::new(remotes),
         active: Mutex::new(active),
         staged: Mutex::new(String::new()),
@@ -589,6 +832,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_targets,
             set_target,
+            add_local,
+            set_local_console,
+            rename_local,
+            remove_local,
+            rescan_locals,
             add_target,
             set_target_os,
             remove_target,
