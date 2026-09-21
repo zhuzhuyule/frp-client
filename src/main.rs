@@ -757,7 +757,10 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "logPath": log_err.0,
         "errPath": log_err.1,
         "savedAt": saved_at,
-        "procStats": stats.map(|(rss_mb, cpu, etime)| serde_json::json!({ "rssMb": (rss_mb * 10.0).round() / 10.0, "cpuPct": cpu, "etime": etime })),
+        "procStats": stats.map(|st| serde_json::json!({
+            "name": st.name, "rssMb": st.rss_mb, "memPct": st.mem_pct,
+            "cpuPct": st.cpu_pct, "etime": st.etime,
+        })),
     }))
 }
 

@@ -318,11 +318,29 @@ body {
 .drift .btn { margin-left: 8px; }
 /* tab 行下面这条：设备现在跑成什么样（只读，改东西去下面两个弹窗） */
 .ov-status { display: flex; flex-direction: column; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
-.st-badges { display: flex; flex-wrap: wrap; gap: 6px; }
-.st-cells {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  gap: 10px 22px;
+/* 第一行：连接状态 + 运行情况 + 关键计数，横向排开自动换行 */
+.st-line1 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.st-in { display: flex; align-items: baseline; gap: 6px; }
+.st-live { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+.st-live.warm { color: var(--warn); }
+.st-live.off { color: var(--faint); font-weight: 500; }
+/* 第二行（本机专属）：进程名与用量环 */
+.st-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 22px; align-items: center; }
+.gauge { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.gauge svg { flex: 0 0 auto; overflow: visible; }
+.ring-bg { fill: none; stroke: #e9eef6; stroke-width: 4; }
+.ring-fg {
+  fill: none; stroke-width: 4; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 16px 16px;
+  transition: stroke-dashoffset .35s ease, stroke .2s ease;
 }
+.ring-t {
+  font-size: 9.5px; font-weight: 700; text-anchor: middle; dominant-baseline: central;
+  font-variant-numeric: tabular-nums;
+}
+.gauge.mid .ring-fg { stroke: var(--primary); } .gauge.mid .ring-t { fill: var(--primary-deep); }
+.gauge.warn .ring-fg { stroke: var(--warn); } .gauge.warn .ring-t { fill: var(--warn); }
+.gauge.bad .ring-fg { stroke: var(--danger); } .gauge.bad .ring-t { fill: var(--danger); }
 .st-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .st-k { color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .st-v {

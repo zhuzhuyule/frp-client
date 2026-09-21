@@ -798,21 +798,58 @@ pub fn frpc_pids() -> Vec<u32> {
         .collect()
 }
 
-/// 本机进程指标：(RSS MB, CPU %, 运行时长)，来自 ps，无需额外依赖
-pub fn proc_stats(pid: u32) -> Option<(f64, f64, String)> {
+/// 本机进程指标，来自 ps，无需额外依赖
+#[derive(Clone, Debug)]
+pub struct ProcStat {
+    pub name: String,
+    pub rss_mb: f64,
+    /// 占整机物理内存的百分比（RSS / hw.memsize，两位小数）
+    pub mem_pct: f64,
+    /// 相对单个核心的百分比（ps %cpu），多核满载可到 100 以上
+    pub cpu_pct: f64,
+    pub etime: String,
+}
+
+/// 整机物理内存 MB；拿不到就返回 0
+fn total_mem_mb() -> f64 {
+    static TOTAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *TOTAL.get_or_init(|| {
+        std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .map(|bytes| bytes / 1048576.0)
+            .unwrap_or(0.0)
+    })
+}
+
+pub fn proc_stats(pid: u32) -> Option<ProcStat> {
     let out = std::process::Command::new("ps")
-        .args(["-o", "rss=,%cpu=,etime=", "-p", &pid.to_string()])
+        .args(["-o", "%cpu=,%mem=,rss=,etime=,comm=", "-p", &pid.to_string()])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut it = text.split_whitespace();
+    let line = String::from_utf8_lossy(out.stdout.as_slice()).trim().to_string();
+    let mut it = line.split_whitespace();
+    let cpu_pct = it.next()?.parse::<f64>().ok()?;
+    let ps_mem_pct = it.next()?.parse::<f64>().ok()?;
     let rss_mb = it.next()?.parse::<f64>().ok()? / 1024.0;
-    let cpu = it.next()?.parse::<f64>().ok()?;
     let etime = it.next()?.to_string();
-    Some((rss_mb, cpu, etime))
+    // comm 放在最后一列：路径里可能有空格，整段取回来再剥掉目录
+    let comm = after_fields(&line, 4).unwrap_or("frpc");
+    let name = comm.rsplit('/').next().unwrap_or(comm).to_string();
+    // ps 的 %mem 只给一位小数，轻量进程会被舍成 0.0；按 RSS/整机重算到两位
+    let total = total_mem_mb();
+    let mem_pct = if total > 0.0 {
+        ((rss_mb / total) * 10000.0).round() / 100.0
+    } else {
+        ps_mem_pct
+    };
+    Some(ProcStat { name, rss_mb: (rss_mb * 10.0).round() / 10.0, mem_pct, cpu_pct, etime })
 }
 
 /// 本地端口背后那个服务的进程信息
@@ -1785,5 +1822,14 @@ remotePort = 2222
         let s = m.get(&port).unwrap_or_else(|| panic!("{port} 未被 lsof 找到"));
         assert_eq!(s.pid, std::process::id());
         assert!(!s.name.is_empty());
+    }
+
+    #[test]
+    fn proc_stats_reads_own_process() {
+        let st = proc_stats(std::process::id()).expect("本测试进程一定能被 ps 读到");
+        // comm 是路径，这里只关心剥掉目录后的名字与百分比字段齐全
+        assert!(!st.name.is_empty() && !st.name.contains('/'), "{:?}", st.name);
+        assert!(st.rss_mb > 0.0, "{:?}", st);
+        assert!(!st.etime.is_empty());
     }
 }

@@ -398,10 +398,10 @@ function driftItems() {
   if (!t || !b || !b.webPort) return null;
   const items = [];
   if (String(b.webPort) !== String(t.port)) {
-    items.push(`端口：配置里写的是 ${b.webPort}，App 连的是 ${t.port}`);
+    items.push(`端口：配置 ${b.webPort}，App 连接 ${t.port}`);
   }
   if (b.webUser && t.user && b.webUser !== t.user) {
-    items.push(`user：配置里写的是 ${b.webUser}，App 用的是 ${t.user}`);
+    items.push(`user：配置 ${b.webUser}，App 连接 ${t.user}`);
   }
   return items.length ? items : null;
 }
@@ -415,7 +415,8 @@ function renderDrift() {
     return;
   }
   const t = activeTarget();
-  el.innerHTML = `${items.join("；")}。若已保存并重启过，可把设备「${esc(t.name)}」的连接参数改成配置里的值。<button class="btn sm js-align">按配置更新设备连接</button>`;
+  el.innerHTML = `设备连接参数与配置不一致 —— ${items.join("；")}。`
+    + `<button class="btn sm js-align">按配置更新「${esc(t.name)}」</button>`;
   el.classList.remove("hidden");
 }
 
@@ -654,41 +655,62 @@ async function loadConfig() {
   }
 }
 
-/* tab 行下方：设备当前跑成什么样。连接参数与配置内容在下面两栏，这里只放运行时事实 */
+/* tab 行下方：第一行是设备当前的连接与运行事实，第二行（仅本机）是进程用量 */
+function fmtEtime(e) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(e || "");
+  if (!m) return e || "";
+  const sec = +m[4] + +m[3] * 60 + (m[2] ? +m[2] * 3600 : 0) + (+m[1] || 0) * 86400;
+  if (sec >= 86400) return `${Math.floor(sec / 86400)} 天 ${Math.floor((sec % 86400) / 3600)} 小时`;
+  if (sec >= 3600) return `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分`;
+  if (sec >= 60) return `${Math.floor(sec / 60)} 分`;
+  return `${sec} 秒`;
+}
+
+/* 用量环：环心是百分比，80% 起转黄、90% 起转红 */
+function gauge(pct, label, detail, tip) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  const tone = p >= 90 ? "bad" : p >= 80 ? "warn" : "mid";
+  const r = 13;
+  const c = 2 * Math.PI * r;
+  const n = p >= 10 ? Math.round(p) : p >= 1 ? Math.round(p * 10) / 10 : Math.round(p * 100) / 100;
+  return `<div class="gauge ${tone}"${tip ? ` title="${esc(tip)}"` : ""}>
+    <svg width="34" height="34" viewBox="0 0 32 32" aria-hidden="true">
+      <circle class="ring-bg" cx="16" cy="16" r="${r}" />
+      <circle class="ring-fg" cx="16" cy="16" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - p / 100)).toFixed(1)}" />
+      <text class="ring-t" x="16" y="16">${n}</text>
+    </svg>
+    <div class="st-cell"><span class="st-k">${esc(label)}</span><span class="st-v">${esc(String(detail))}</span></div>
+  </div>`;
+}
+
 function statusStrip(t, s) {
   if (!t) return `<span class="faint">还没有设备，点标签行的「＋ 新建设备」</span>`;
-  const badges = [
-    t.kind === "local"
-      ? t.managed
-        ? '<span class="badge mgd">本机 · 托管</span>'
-        : '<span class="badge ro">本机 · 只读</span>'
-      : '<span class="badge ro">远端</span>',
-    s
-      ? s.running
-        ? '<span class="badge run">● frpc 运行中</span>'
-        : s.apiReachable
-          ? '<span class="badge warn">● 控制台可达 · 进程未识别</span>'
-          : '<span class="badge stop">● frpc 不可达</span>'
-      : '<span class="badge stop">● 状态读取失败</span>',
-    t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : "",
-  ].join("");
-  const cell = (k, v, hot) =>
-    v ? `<div class="st-cell"><span class="st-k">${k}</span><span class="st-v${hot ? " hot" : ""}">${esc(String(v))}</span></div>` : "";
-  const rp = (s && s.proxies) || [];
-  const bad = rp.filter((p) => p.status !== "running");
-  const stats = s && s.procStats;
+  const local = t.kind === "local";
   const live = !!s && s.apiReachable;
-  return `<div class="st-badges">${badges}</div>
-    <div class="st-cells">
-      ${live ? cell("隧道", `${s.runningCount} / ${s.proxyCount} 运行中`) : ""}
-      ${live && bad.length ? cell("异常", `${bad.length} 条`, true) : ""}
-      ${cell("管理 API", s ? (live ? "可达" : "不可达") : "—")}
-      ${cell("进程", s && s.pid ? `PID ${s.pid}` : t.kind === "local" && t.pid ? `PID ${t.pid}` : "")}
-      ${stats ? cell("内存", `${stats.rssMb}MB`) : ""}
-      ${stats ? cell("CPU", `${stats.cpuPct}%`) : ""}
-      ${stats ? cell("已运行", stats.etime) : ""}
-      ${live ? cell("生效方式", state.storeMode ? "store · 改动实时生效" : "配置文件 · 保存后生效") : ""}
-    </div>`;
+  const stats = s && s.procStats;
+  const rp = (s && s.proxies) || [];
+  const bad = rp.filter((p) => p.status !== "running").length;
+  const cell = (k, v, hot) =>
+    v ? `<span class="st-in"><span class="st-k">${k}</span><span class="st-v${hot ? " hot" : ""}">${esc(String(v))}</span></span>` : "";
+  const run = local
+    ? stats
+      ? `<span class="st-live on">FRPC 运行中${stats.etime ? " · " + fmtEtime(stats.etime) : ""}</span>`
+      : `<span class="st-live${live ? " warm" : " off"}">FRPC ${live ? "进程未识别" : "未运行"}</span>`
+    : "";
+  return `<div class="st-line1">
+      <span class="badge ${live ? "run" : "stop"}">● 控制台${live ? "连接成功" : "连接未成功"}</span>
+      <span class="badge ${local && t.managed ? "mgd" : "ro"}">${local ? (t.managed ? "本机 · 托管" : "本机") : "远端"}</span>
+      ${run}
+      ${live ? cell("隧道", `${s.runningCount} / ${s.proxyCount}`) : ""}
+      ${bad ? cell("异常", `${bad} 条`, true) : ""}
+      ${live ? cell("生效", state.storeMode ? "实时（store）" : "保存后") : ""}
+      ${t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : ""}
+    </div>
+    ${local && stats ? `<div class="st-gauges">
+        <div class="st-cell"><span class="st-k">进程</span><span class="st-v">${esc(stats.name || "frpc")} · PID ${s.pid}</span></div>
+        ${gauge(stats.memPct, "内存", `${stats.rssMb}MB · ${stats.memPct}%`, "占整机物理内存的比例")}
+        ${gauge(stats.cpuPct, "CPU", `${stats.cpuPct}%`, "100% = 跑满一个核心")}
+      </div>` : ""}`;
 }
 
 function renderConfigOverview() {
@@ -702,11 +724,11 @@ function renderConfigOverview() {
   $("i-ep-run").textContent = t
     ? t.kind === "local"
       ? t.pid
-        ? `PID ${t.pid}${t.managed ? " · 由本 App 的 LaunchAgent 监督" : " · 不是本 App 启动的"}`
+        ? `PID ${t.pid}${t.managed ? " · LaunchAgent 监督" : " · 非本 App 启动"}`
         : t.managed
-          ? "未运行，可由本 App 启动"
-          : "未运行，且不由本 App 监督"
-      : "进程控制需在目标机上进行"
+          ? "未运行 · 可由本 App 启动"
+          : "未运行 · 不由本 App 监督"
+      : "需在目标机上操作"
     : "—";
   const hasCfg = !!state.cfg.raw;
   $("i-srv").textContent = b.serverAddr
@@ -721,7 +743,7 @@ function renderConfigOverview() {
       : "未读取到配置";
   const storeN = px.filter((p) => p.source === "store").length;
   $("i-tc").textContent = hasCfg
-    ? `${px.length} 条` + (storeN ? ` · ${storeN} 条在 store，${px.length - storeN} 条在配置文件` : " · 全部在配置文件里")
+    ? `${px.length} 条` + (storeN ? ` · store ${storeN} / 文件 ${px.length - storeN}` : " · 全在配置文件")
     : "未读取到配置";
   $("i-cfg").textContent =
     (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
@@ -730,7 +752,7 @@ function renderConfigOverview() {
   const edit = $("btn-edit-server");
   edit.disabled = !t || !hasCfg || state.busy;
   edit.title = !hasCfg
-    ? "读不到这台设备的配置：设备可能不在线，或地址与凭据不对。可点左侧「编辑设备连接」核对"
+    ? "读不到这台设备的配置：可能不在线，或地址与凭据不对。先点「编辑设备连接」核对"
     : "改这台 frpc 自己的配置（服务端、控制台绑定、隧道）";
   $("ov-foot-note").textContent = hasCfg
     ? ""
