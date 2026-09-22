@@ -33,6 +33,9 @@ const state = {
   dev: { kind: "remote", editing: "" },
   // AI 编排：profiles 是后端 [[aiModel]] 的只读视图（key 只有 hasKey），default 是点选使用的那份
   ai: { profiles: [], default: "", editing: "", drafts: [], models: [], editDraft: null },
+  // 切目标的代际号：读请求回来时若代际已变（用户又切走了），结果直接丢弃
+  loadGen: 0,
+  polling: false,
 };
 
 const PAGE_META = {
@@ -139,6 +142,16 @@ async function withBusy(fn) {
 const FAILED = { failed: true };
 const okv = (v) => v !== FAILED;
 
+/* 后台读：不进忙碌锁、失败只 toast。死主机的网络等待不该挡住任何操作 */
+async function softCall(name, args) {
+  try {
+    return await invoke(name, args);
+  } catch (e) {
+    toast(String(e), "err");
+    return FAILED;
+  }
+}
+
 async function call(name, args) {
   setBusy(true);
   try {
@@ -175,9 +188,10 @@ $("btn-new").addEventListener("click", () => {
 });
 
 /* ---------- devices（设备 = App 要连的那台 frpc 控制台） ---------- */
-async function loadTargets() {
-  const t = await call("get_targets");
-  if (okv(t)) {
+async function loadTargets(gen = state.loadGen) {
+  // 切设备的必经路径，不能上忙碌锁 —— 用后台读
+  const t = await softCall("get_targets");
+  if (okv(t) && gen === state.loadGen) {
     state.targets = t;
     renderTargetTabs();
     probeTargets();
@@ -229,20 +243,28 @@ function tabsHtml() {
 }
 
 async function switchTarget(kind, id) {
-  return withBusy(async () => {
-    const note = await call("set_target", { kind, id });
-    if (!okv(note)) return false;
-    toast(note, String(note).includes("不可达") ? "info" : "ok");
-    await afterTargetChange();
-    return true;
-  });
+  // 切换必须秒过：set_target 只挪后端指针，数据加载全部走可丢弃的后台读
+  const gen = ++state.loadGen;
+  const note = await softCall("set_target", { kind, id });
+  if (!okv(note)) {
+    loadTargets(gen); // 后端没切成功，把乐观高亮的页签拉回真实值
+    return;
+  }
+  if (gen !== state.loadGen) return; // 期间又点了别的设备，让最新那次继续
+  toast(note, "ok");
+  await afterTargetChange(gen);
 }
 
-async function afterTargetChange() {
+async function afterTargetChange(gen = ++state.loadGen) {
   showSkeletons();
-  await loadTargets();
+  await loadTargets(gen);
+  if (gen !== state.loadGen) return;
+  // 暂存区后台补：远端不可达会吃满超时，但只 toast 一句，不拦切走
+  softCall("refresh_staged", {});
   await loadConfig();
+  if (gen !== state.loadGen) return;
   await refreshStatus();
+  if (gen !== state.loadGen) return;
   setDirty(false);
   clearStale();
   applyMode();
@@ -258,7 +280,11 @@ function bindTabs(el) {
         toast("上一步还没结束，稍等再切设备", "info");
         return;
       }
-      // 点下去就先换骨架屏：set_target 也要一个来回，别让上一台设备的数据挂着
+      // 点下去就立刻生效：乐观换掉活动设备并重绘页签，不等后端一个来回
+      state.targets.activeId = id;
+      state.targets.active = kind;
+      renderTargetTabs();
+      // 上一台设备的数据马上就是旧的，先换成骨架屏
       showSkeletons();
       switchTarget(kind, id);
     });
@@ -632,10 +658,13 @@ async function checkUpdate() {
 }
 
 /* ---------- status rendering ---------- */
-async function refreshStatus() {
+async function refreshStatus(quiet) {
+  const gen = state.loadGen;
+  let s;
   try {
-    state.status = await invoke("get_status");
+    s = await invoke("get_status");
   } catch (e) {
+    if (gen !== state.loadGen) return; // 已经切走，旧目标的报错不用演
     state.status = null;
     state.loading = false;
     renderSideStatus("未识别到目标", "", false);
@@ -644,10 +673,11 @@ async function refreshStatus() {
     renderSideUsage(null);
     renderTargetTabs();
     renderConfigOverview();
-    toast(`状态获取失败：${e}`, "err");
+    if (!quiet) toast(`状态获取失败：${e}`, "err");
     return;
   }
-  const s = state.status;
+  if (gen !== state.loadGen) return; // 结果属于旧目标，丢弃
+  state.status = s;
   state.loading = false;
   const st = s.procStats;
   // 当前这台的结果已经在 get_status 里了，先填进探活表，页签上的点不用等 probe_targets 那一轮
@@ -839,12 +869,12 @@ function showConfirm(title, body, okLabel = "确认") {
 
 /* ---------- config（页面只读概览，编辑走弹窗） ---------- */
 async function loadConfig() {
-  const cfg = await call("get_config");
-  if (okv(cfg)) {
-    state.cfg = cfg;
-    if (typeof cfg.storeMode === "boolean") state.storeMode = cfg.storeMode;
-    if (state.srv.dirty) styleSrvFoot();
-  }
+  const gen = state.loadGen;
+  const cfg = await softCall("get_config");
+  if (!okv(cfg) || gen !== state.loadGen) return; // 等回来时已切走：这份结果作废
+  state.cfg = cfg;
+  if (typeof cfg.storeMode === "boolean") state.storeMode = cfg.storeMode;
+  if (state.srv.dirty) styleSrvFoot();
 }
 
 /* tab 行下方：这一台设备当前的连接与运行事实（进程用量在侧边栏底部） */
@@ -1697,8 +1727,10 @@ $("btn-refresh").addEventListener("click", async () => {
   loadAiCfg();
   let tick = 0;
   setInterval(() => {
-    if (document.hidden || state.busy) return;
-    refreshStatus();
+    if (document.hidden || state.busy || state.polling) return;
+    // 静默轮询：死目标每 5s 重试一次，连上了数据自然就回来；报错不刷屏
+    state.polling = true;
+    refreshStatus(true).finally(() => { state.polling = false; });
     // 页签上其它设备的点：每 15s 整批探一次（离线设备要等超时，比状态轮询贵）
     if (++tick % 3 === 0) probeTargets();
   }, 5000);

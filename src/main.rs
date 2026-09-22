@@ -412,18 +412,22 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
         other => return Err(format!("未知目标类型 {other}")),
     };
     *state.active.lock().unwrap() = next.clone();
-    // 选中一台设备不该要求它活着：连不上的设备同样要被改名、补凭据或移除，
-    // 所以这里照样切过去，只是暂存区清空并在提示里说明不可达。
-    let (staged, warn) = match pull_staged(&state).await {
-        Ok(s) => (s, ""),
-        Err(_) => (String::new(), " · 目标当前不可达"),
-    };
-    *state.staged.lock().unwrap() = staged;
+    // 选中一台设备不该要求它活着，更不该为它等网络：这里只切指针、清暂存，
+    // 立即返回。暂存由前端后台调 refresh_staged 补上（连不上就留空，不卡切换）。
+    state.staged.lock().unwrap().clear();
     let label = match &next {
         Active::Local(i) => local_instance(&state, i)?.name,
         Active::Remote(n) => n.clone(),
     };
-    Ok(format!("已切换到目标「{label}」{warn}"))
+    Ok(format!("已切换到目标「{label}」"))
+}
+
+/// 从活动目标的权威源刷新暂存配置（可能很慢：远端不可达时要吃满超时）
+#[tauri::command]
+async fn refresh_staged(state: State<'_, AppState>) -> Result<(), String> {
+    let s = pull_staged(&state).await?;
+    *state.staged.lock().unwrap() = s;
+    Ok(())
 }
 
 /// 手动添加/更新一个本机实例（配置文件路径 + 可选的控制台凭据）
@@ -1323,6 +1327,7 @@ fn main() {
             get_targets,
             probe_targets,
             set_target,
+            refresh_staged,
             add_local,
             check_update,
             rename_local,
