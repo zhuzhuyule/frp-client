@@ -120,21 +120,16 @@
         <div id="atabs" class="ttabs"></div>
         <div class="card ai-panel">
           <div class="ai-sec">
-            <div class="ai-sec-h"><span class="ai-sec-t">服务设置</span><span id="ai-note" class="hint"></span></div>
-            <div class="ai-grid">
-              <label class="field wide"><span>API 地址<i class="f-key">base_url</i></span><input id="ai-base" placeholder="https://api.openai.com/v1" /></label>
-              <label class="field"><span>模型<i class="f-key">model</i></span><input id="ai-model" placeholder="如 gpt-4o-mini / deepseek-chat" /></label>
-              <label class="field"><span>API Key<i class="f-key">api_key</i></span><input id="ai-key" type="password" placeholder="API Key（只存本机 app.toml）" /></label>
-            </div>
-            <div class="presets" id="ai-providers"></div>
-            <div class="ai-sec-foot">
-              <span class="hint">走 OpenAI 兼容的 /chat/completions，DeepSeek / Kimi / 百炼 / Ollama 都可直接填地址</span>
+            <div class="ai-sec-h">
+              <span class="ai-sec-t">模型配置</span>
+              <span class="hint">点选一个用于生成 · 支持多个 OpenAI 兼容服务（/chat/completions）</span>
               <span class="flex1"></span>
-              <button id="btn-ai-save" class="btn sm">保存设置</button>
+              <button id="btn-ai-add" class="btn sm">+ 添加模型配置</button>
             </div>
+            <div id="ai-profiles" class="ai-profiles"></div>
           </div>
           <div class="ai-sec">
-            <div class="ai-sec-h"><span class="ai-sec-t">生成隧道草案</span><span class="hint">草案不会自动写入，逐条确认后才加到当前设备</span></div>
+            <div class="ai-sec-h"><span class="ai-sec-t">生成隧道草案</span><span id="ai-use-note" class="hint">草案不会自动写入，逐条确认后才加到当前设备</span></div>
             <textarea id="ai-prompt" rows="3" placeholder="例如：把本机 8080 的 web 服务用 tcp 映射到远程 18080；再起一条 http 隧道，把 3000 挂到 app.example.com"></textarea>
             <div class="ai-sec-foot">
               <button id="btn-ai-clear" class="btn sm ghost hidden">清空草案</button>
@@ -320,6 +315,24 @@
       </div>
     </div>
   </div>
+<div id="ai-mask" class="mask hidden">
+  <div class="modal">
+    <div class="modal-title" id="ai-modal-title">添加模型配置</div>
+    <div class="pgrid">
+      <label class="field wide"><span>配置名称<i class="f-key">name</i></span><input id="ai-f-name" placeholder="如 DeepSeek / 本地 Ollama" /></label>
+      <label class="field wide"><span>API 地址<i class="f-key">base_url</i></span><input id="ai-f-base" placeholder="https://api.openai.com/v1" />
+        <div class="presets" id="ai-providers"></div>
+      </label>
+      <label class="field"><span>模型<i class="f-key">model</i></span><input id="ai-f-model" placeholder="如 gpt-4o-mini / deepseek-chat" /></label>
+      <label class="field"><span>API Key<i class="f-key">api_key</i></span><input id="ai-f-key" type="password" placeholder="只存本机 app.toml" /></label>
+    </div>
+    <div class="modal-foot">
+      <span class="flex1"></span>
+      <button id="btn-ai-cancel" class="btn sm">取消</button>
+      <button id="btn-ai-ok" class="btn primary sm">保存</button>
+    </div>
+  </div>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

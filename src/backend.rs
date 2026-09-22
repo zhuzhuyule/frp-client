@@ -371,39 +371,81 @@ fn write_app_doc(doc: &DocumentMut) -> Result<()> {
 
 /* ---------------- AI 编排 ---------------- */
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AiCfg {
+/// 一份模型配置：名字 + OpenAI 兼容端点。可同时存多份，界面上点选当前使用的那份
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiProfile {
+    pub name: String,
     pub base_url: String,
     pub model: String,
     pub api_key: String,
 }
 
-pub fn load_ai() -> AiCfg {
+/// 返回 ([[aiModel]] 列表, 默认配置名)。旧版单配置 [ai] 表自动迁移成一条
+pub fn load_ai_profiles() -> Result<Vec<AiProfile>> {
     let Ok(src) = std::fs::read_to_string(app_config_path()) else {
-        return AiCfg::default();
+        return Ok(Vec::new());
     };
-    let Ok(doc) = src.parse::<DocumentMut>() else {
-        return AiCfg::default();
-    };
-    let Some(Item::Table(t)) = doc.get("ai") else {
-        return AiCfg::default();
-    };
-    let s = |k: &str| -> String {
+    let doc = src.parse::<DocumentMut>().context("app.toml 解析失败")?;
+    let s_of = |t: &dyn toml_edit::TableLike, k: &str| -> String {
         t.get(k)
             .and_then(|it| it.as_value())
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string()
     };
-    AiCfg {
-        base_url: s("baseUrl"),
-        model: s("model"),
-        api_key: s("apiKey"),
+    let mut out = Vec::new();
+    match doc.get("aiModel") {
+        Some(Item::ArrayOfTables(aot)) => {
+            for tbl in aot.iter() {
+                let name = s_of(tbl, "name");
+                if !name.is_empty() {
+                    out.push(AiProfile {
+                        name,
+                        base_url: s_of(tbl, "baseUrl"),
+                        model: s_of(tbl, "model"),
+                        api_key: s_of(tbl, "apiKey"),
+                    });
+                }
+            }
+        }
+        _ => {
+            if let Some(Item::Table(t)) = doc.get("ai") {
+                let (base, model, key) = (s_of(t, "baseUrl"), s_of(t, "model"), s_of(t, "apiKey"));
+                if !base.is_empty() || !model.is_empty() {
+                    out.push(AiProfile {
+                        name: if model.is_empty() { "默认".into() } else { model.clone() },
+                        base_url: base,
+                        model,
+                        api_key: key,
+                    });
+                }
+            }
+        }
     }
+    Ok(out)
 }
 
-/// 整体替换 [ai] 表，其它表原样保留；三段全空时删掉整节
-pub fn save_ai(cfg: &AiCfg) -> Result<()> {
+pub fn load_ai_default() -> String {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return String::new();
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return String::new();
+    };
+    doc.get("ai")
+        .and_then(|it| it.as_table())
+        .map(|t| {
+            t.get("default")
+                .and_then(|it| it.as_value())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// 整体替换 [[aiModel]] 与 [ai]（只剩 default 一个键），其它表原样保留
+pub fn save_ai_profiles(list: &[AiProfile], default: &str) -> Result<()> {
     let path = app_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
@@ -413,13 +455,25 @@ pub fn save_ai(cfg: &AiCfg) -> Result<()> {
         Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
         Err(_) => DocumentMut::new(),
     };
-    if cfg.base_url.is_empty() && cfg.model.is_empty() && cfg.api_key.is_empty() {
+    if list.is_empty() && default.is_empty() {
+        doc.remove("aiModel");
         doc.remove("ai");
     } else {
+        let mut aot = ArrayOfTables::new();
+        for p in list {
+            let mut tbl = Table::new();
+            tbl.set_implicit(false);
+            tbl["name"] = value(p.name.as_str());
+            tbl["baseUrl"] = value(p.base_url.as_str());
+            tbl["model"] = value(p.model.as_str());
+            tbl["apiKey"] = value(p.api_key.as_str());
+            aot.push(tbl);
+        }
+        doc["aiModel"] = Item::ArrayOfTables(aot);
         let mut t = Table::new();
-        t["baseUrl"] = value(cfg.base_url.as_str());
-        t["model"] = value(cfg.model.as_str());
-        t["apiKey"] = value(cfg.api_key.as_str());
+        if !default.is_empty() {
+            t["default"] = value(default);
+        }
         doc["ai"] = Item::Table(t);
     }
     write_app_doc(&doc)
@@ -539,7 +593,7 @@ pub fn parse_ai_drafts(text: &str) -> Result<Vec<AiDraft>, String> {
     Ok(out)
 }
 
-pub fn ai_generate(cfg: &AiCfg, prompt: &str, context: &str) -> Result<Vec<AiDraft>, String> {
+pub fn ai_generate(cfg: &AiProfile, prompt: &str, context: &str) -> Result<Vec<AiDraft>, String> {
     let system = format!(
         "你是 frpc（fatedier/frp）隧道编排助手，只支持三种隧道类型：tcp、udp、http。\n\
          规则：\n\
@@ -2730,18 +2784,44 @@ maxFailed = 3
         save_remotes(&[]).unwrap();
         assert_eq!(load_locals(), ls);
         assert!(load_remotes().unwrap().is_empty());
-        // [ai] 与其它表共存；save_ai 只替换 [ai]
-        let ai = AiCfg {
-            base_url: "https://api.openai.com/v1".into(),
-            model: "gpt-4o-mini".into(),
-            api_key: "sk-secret".into(),
-        };
-        save_ai(&ai).unwrap();
-        assert_eq!(load_ai(), ai);
-        assert_eq!(load_locals(), ls); // [ai] 写入不冲掉 [[local]]
-        // 三段全空 → 删掉整节
-        save_ai(&AiCfg::default()).unwrap();
-        assert_eq!(load_ai(), AiCfg::default());
+        // [[aiModel]] 多配置与其它表共存；save_ai_profiles 只替换 aiModel/ai
+        let profiles = vec![
+            AiProfile {
+                name: "DeepSeek".into(),
+                base_url: "https://api.deepseek.com/v1".into(),
+                model: "deepseek-chat".into(),
+                api_key: "sk-secret".into(),
+            },
+            AiProfile {
+                name: "本地".into(),
+                base_url: "http://127.0.0.1:11434/v1".into(),
+                model: "qwen2.5".into(),
+                api_key: String::new(),
+            },
+        ];
+        save_ai_profiles(&profiles, "DeepSeek").unwrap();
+        assert_eq!(load_ai_profiles().unwrap(), profiles);
+        assert_eq!(load_ai_default(), "DeepSeek");
+        assert_eq!(load_locals(), ls); // aiModel 写入不冲掉 [[local]]
+        // 空列表 + 空默认 → 删掉整节
+        save_ai_profiles(&[], "").unwrap();
+        assert!(load_ai_profiles().unwrap().is_empty());
+        assert_eq!(load_ai_default(), "");
+        // 旧版单配置 [ai] 表 → 自动迁移成一条以 model 命名的 profile
+        std::fs::write(
+            app_config_path(),
+            "[ai]\nbaseUrl = \"https://api.kimi.com/coding/v1\"\nmodel = \"kimi-k2\"\napiKey = \"sk-old\"\n",
+        )
+        .unwrap();
+        let migrated = load_ai_profiles().unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0], AiProfile {
+            name: "kimi-k2".into(),
+            base_url: "https://api.kimi.com/coding/v1".into(),
+            model: "kimi-k2".into(),
+            api_key: "sk-old".into(),
+        });
+        assert_eq!(load_ai_default(), "");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

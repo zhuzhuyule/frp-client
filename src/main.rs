@@ -1115,17 +1115,33 @@ async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String,
 
 #[tauri::command]
 async fn get_ai_cfg() -> Result<serde_json::Value, String> {
-    let c = backend::load_ai();
+    let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    let default = backend::load_ai_default();
     // key 永远不出后端，前端只拿 hasKey 决定占位文案
     Ok(serde_json::json!({
-        "baseUrl": c.base_url,
-        "model": c.model,
-        "hasKey": !c.api_key.is_empty(),
+        "profiles": profiles.iter().map(|p| serde_json::json!({
+            "name": p.name,
+            "baseUrl": p.base_url,
+            "model": p.model,
+            "hasKey": !p.api_key.is_empty(),
+        })).collect::<Vec<_>>(),
+        "default": default,
     }))
 }
 
+/// 新增或（original 命中已有名字时）就地编辑一份模型配置；编辑留空 key = 保留旧 key
 #[tauri::command]
-async fn save_ai_cmd(base_url: String, model: String, api_key: String) -> Result<String, String> {
+async fn save_ai_profile(
+    original: String,
+    name: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("名字不能为空".into());
+    }
     let base = base_url.trim().trim_end_matches('/').to_string();
     if !base.starts_with("http://") && !base.starts_with("https://") {
         return Err("API 地址要以 http:// 或 https:// 开头".into());
@@ -1133,27 +1149,92 @@ async fn save_ai_cmd(base_url: String, model: String, api_key: String) -> Result
     if model.trim().is_empty() {
         return Err("模型名不能为空".into());
     }
-    let mut c = backend::load_ai();
-    c.base_url = base;
-    c.model = model.trim().to_string();
-    // 留空 = 保留已存的 key（前端拿不到旧 key，没法回填）
-    let key = api_key.trim();
-    if !key.is_empty() {
-        c.api_key = key.to_string();
+    let mut profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    let original = original.trim();
+    if let Some(idx) = profiles.iter().position(|p| p.name == name) {
+        if profiles[idx].name != original {
+            return Err(format!("已有同名配置「{name}」"));
+        }
     }
-    backend::save_ai(&c).map_err(|e| format!("{e:#}"))?;
-    Ok("AI 服务设置已保存".into())
+    let key = api_key.trim();
+    let mut default = backend::load_ai_default();
+    if let Some(pos) = profiles.iter().position(|p| p.name == original) {
+        if original.is_empty() {
+            return Err("名字不能为空".into());
+        }
+        // 编辑：非空 key 覆盖，留空保留旧 key
+        let old_key = profiles[pos].api_key.clone();
+        profiles[pos] = backend::AiProfile {
+            name: name.clone(),
+            base_url: base,
+            model: model.trim().to_string(),
+            api_key: if key.is_empty() { old_key } else { key.to_string() },
+        };
+        if default == original {
+            default = name.clone();
+        }
+    } else {
+        profiles.push(backend::AiProfile {
+            name: name.clone(),
+            base_url: base,
+            model: model.trim().to_string(),
+            api_key: key.to_string(),
+        });
+    }
+    if default.is_empty() {
+        default = name.clone();
+    }
+    backend::save_ai_profiles(&profiles, &default).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("已保存模型配置「{name}」"))
+}
+
+#[tauri::command]
+async fn remove_ai_profile(name: String) -> Result<String, String> {
+    let name = name.trim();
+    let mut profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    let before = profiles.len();
+    profiles.retain(|p| p.name != name);
+    if profiles.len() == before {
+        return Err(format!("没有名为「{name}」的配置"));
+    }
+    let mut default = backend::load_ai_default();
+    if default == name {
+        default = profiles.first().map(|p| p.name.clone()).unwrap_or_default();
+    }
+    backend::save_ai_profiles(&profiles, &default).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("已删除模型配置「{name}」"))
+}
+
+#[tauri::command]
+async fn set_ai_default(name: String) -> Result<String, String> {
+    let name = name.trim();
+    let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    if !profiles.iter().any(|p| p.name == name) {
+        return Err(format!("没有名为「{name}」的配置"));
+    }
+    backend::save_ai_profiles(&profiles, name).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("使用「{name}」"))
 }
 
 #[tauri::command]
 async fn ai_generate_cmd(
     state: State<'_, AppState>,
+    profile: String,
     prompt: String,
 ) -> Result<serde_json::Value, String> {
-    let cfg = backend::load_ai();
-    if cfg.base_url.is_empty() || cfg.model.is_empty() {
-        return Err("先在本页上方的服务设置里填 API 地址与模型并保存".into());
-    }
+    let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    let want = profile.trim();
+    let want_owned;
+    let want = if want.is_empty() {
+        want_owned = backend::load_ai_default();
+        want_owned.as_str()
+    } else {
+        want
+    };
+    let cfg = profiles.iter().find(|p| p.name == want).cloned();
+    let Some(cfg) = cfg else {
+        return Err("先添加模型配置，并选一个用于生成".into());
+    };
     let prompt = prompt.trim().to_string();
     if prompt.is_empty() {
         return Err("先描述需求".into());
@@ -1238,7 +1319,9 @@ fn main() {
             read_log,
             reveal_file,
             get_ai_cfg,
-            save_ai_cmd,
+            save_ai_profile,
+            remove_ai_profile,
+            set_ai_default,
             ai_generate_cmd
         ])
         .run(tauri::generate_context!())

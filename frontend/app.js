@@ -31,8 +31,8 @@ const state = {
   srv: { tab: "ui", raw: "", dirty: false },
   // 设备弹窗：editing 为已有设备的 id（新建时为空）
   dev: { kind: "remote", editing: "" },
-  // AI 编排：cfg 是后端 [ai] 的只读视图（key 只有 hasKey），drafts 是生成的草案
-  ai: { cfg: { baseUrl: "", model: "", hasKey: false }, drafts: [] },
+  // AI 编排：profiles 是后端 [[aiModel]] 的只读视图（key 只有 hasKey），default 是点选使用的那份
+  ai: { profiles: [], default: "", editing: "", drafts: [] },
 };
 
 const PAGE_META = {
@@ -1288,22 +1288,63 @@ const AI_PROVIDERS = [
 ];
 
 function renderAiProviders() {
-  const cur = $("ai-base").value.trim().replace(/\/+$/, "");
+  const cur = $("ai-f-base").value.trim().replace(/\/+$/, "");
   $("ai-providers").innerHTML = AI_PROVIDERS.map(([n, u, m]) =>
     `<button class="preset ${cur === u ? "on" : ""}" data-base="${esc(u)}" data-model="${esc(m)}" title="${esc(u)}">${esc(n)}</button>`
   ).join("");
 }
 
+function renderAiProfiles() {
+  const ps = state.ai.profiles;
+  $("ai-profiles").innerHTML = ps.length
+    ? ps
+        .map(
+          (p) => `
+    <div class="ai-prof ${p.name === state.ai.default ? "on" : ""}" data-name="${esc(p.name)}" title="点击选用这个配置">
+      <span class="ap-dot"></span>
+      <span class="ap-name">${esc(p.name)}</span>
+      <span class="ap-model">${esc(p.model)} · ${esc(p.baseUrl)}</span>
+      <span class="flex1"></span>
+      <button class="btn xs ap-edit" data-name="${esc(p.name)}">编辑</button>
+      <button class="btn xs ghost ap-del" data-name="${esc(p.name)}">删除</button>
+    </div>`
+        )
+        .join("")
+    : `<div class="hint">还没有模型配置，点右上角「+ 添加模型配置」，填一个 OpenAI 兼容服务的地址即可（DeepSeek / Kimi / 百炼 / Ollama 都有预置）。</div>`;
+  const cur = ps.find((p) => p.name === state.ai.default);
+  $("ai-use-note").textContent = cur
+    ? `使用「${cur.name}」(${cur.model}) · 草案不会自动写入，逐条确认后才加到当前设备`
+    : "草案不会自动写入，逐条确认后才加到当前设备";
+}
+
 async function loadAiCfg() {
   const c = await call("get_ai_cfg");
   if (!okv(c)) return;
-  state.ai.cfg = c;
-  $("ai-base").value = c.baseUrl || "";
-  $("ai-model").value = c.model || "";
-  $("ai-key").value = "";
-  $("ai-key").placeholder = c.hasKey ? "已保存，留空则保持不变" : "API Key（只存本机 app.toml）";
-  $("ai-note").textContent = c.baseUrl && c.model ? `当前调用 ${c.model}` : "尚未配置，生成前需要先保存";
+  state.ai.profiles = c.profiles || [];
+  state.ai.default = c.default || "";
+  // 默认名对不上任何配置时退回第一条
+  if (!state.ai.profiles.some((p) => p.name === state.ai.default)) {
+    state.ai.default = state.ai.profiles.length ? state.ai.profiles[0].name : "";
+  }
+  renderAiProfiles();
+}
+
+function openAiModal(original) {
+  state.ai.editing = original || "";
+  const p = original ? state.ai.profiles.find((x) => x.name === original) : null;
+  $("ai-modal-title").textContent = p ? `编辑模型配置「${p.name}」` : "添加模型配置";
+  $("ai-f-name").value = p ? p.name : "";
+  $("ai-f-base").value = p ? p.baseUrl : "";
+  $("ai-f-model").value = p ? p.model : "";
+  $("ai-f-key").value = "";
+  $("ai-f-key").placeholder = p && p.hasKey ? "已保存，留空则保持不变" : "API Key（只存本机 app.toml）";
   renderAiProviders();
+  $("ai-mask").classList.remove("hidden");
+  $("ai-f-name").focus();
+}
+
+function closeAiModal() {
+  $("ai-mask").classList.add("hidden");
 }
 
 function aiDraftMap(d) {
@@ -1388,22 +1429,60 @@ async function aiApply(indices) {
 $("ai-providers").addEventListener("click", (e) => {
   const b = e.target.closest(".preset");
   if (!b) return;
-  $("ai-base").value = b.dataset.base;
-  $("ai-model").value = b.dataset.model;
+  $("ai-f-base").value = b.dataset.base;
+  $("ai-f-model").value = b.dataset.model;
   renderAiProviders();
 });
-$("ai-base").addEventListener("input", renderAiProviders);
-$("btn-ai-save").addEventListener("click", async () => {
+$("ai-f-base").addEventListener("input", renderAiProviders);
+$("btn-ai-add").addEventListener("click", () => openAiModal(""));
+$("btn-ai-cancel").addEventListener("click", closeAiModal);
+$("ai-mask").addEventListener("click", (e) => {
+  if (e.target === $("ai-mask")) closeAiModal();
+});
+$("btn-ai-ok").addEventListener("click", async () => {
   await withBusy(async () => {
-    const r = await call("save_ai_cmd", {
-      baseUrl: $("ai-base").value.trim(),
-      model: $("ai-model").value.trim(),
-      apiKey: $("ai-key").value.trim(),
+    const r = await call("save_ai_profile", {
+      original: state.ai.editing,
+      name: $("ai-f-name").value.trim(),
+      baseUrl: $("ai-f-base").value.trim(),
+      model: $("ai-f-model").value.trim(),
+      apiKey: $("ai-f-key").value.trim(),
     });
     if (!okv(r)) return;
+    closeAiModal();
     toast(r, "ok");
     await loadAiCfg();
   });
+});
+$("ai-profiles").addEventListener("click", async (e) => {
+  if (state.busy) return;
+  const edit = e.target.closest(".ap-edit");
+  if (edit) {
+    openAiModal(edit.dataset.name);
+    return;
+  }
+  const del = e.target.closest(".ap-del");
+  if (del) {
+    const name = del.dataset.name;
+    const yes = await showConfirm("删除模型配置", `删除「${name}」？API Key 也会一并从本机移除。`, "删除");
+    if (!yes) return;
+    await withBusy(async () => {
+      const r = await call("remove_ai_profile", { name });
+      if (!okv(r)) return;
+      toast(r, "ok");
+      await loadAiCfg();
+    });
+    return;
+  }
+  const row = e.target.closest(".ai-prof");
+  if (row && row.dataset.name !== state.ai.default) {
+    await withBusy(async () => {
+      const r = await call("set_ai_default", { name: row.dataset.name });
+      if (!okv(r)) return;
+      state.ai.default = row.dataset.name;
+      renderAiProfiles();
+    });
+  }
 });
 $("btn-ai-gen").addEventListener("click", async () => {
   const prompt = $("ai-prompt").value.trim();
@@ -1411,8 +1490,12 @@ $("btn-ai-gen").addEventListener("click", async () => {
     toast("先描述需求", "err");
     return;
   }
+  if (!state.ai.default) {
+    toast("先添加并选择一个模型配置", "err");
+    return;
+  }
   await withBusy(async () => {
-    const r = await call("ai_generate_cmd", { prompt });
+    const r = await call("ai_generate_cmd", { profile: state.ai.default, prompt });
     if (!okv(r)) return;
     state.ai.drafts = (r.tunnels || []).map((t) => ({ ...t, st: "", msg: "" }));
     renderAiDrafts();
