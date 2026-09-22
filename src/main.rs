@@ -1216,6 +1216,27 @@ async fn set_ai_default(name: String) -> Result<String, String> {
     Ok(format!("使用「{name}」"))
 }
 
+/// 连通性测试 + 拉模型列表。编辑已有配置时 key 留空 = 用已存的 key 去试
+#[tauri::command]
+async fn ai_models_cmd(base_url: String, api_key: String, profile: String) -> Result<serde_json::Value, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err("API 地址要以 http:// 或 https:// 开头".into());
+    }
+    let mut key = api_key.trim().to_string();
+    let profile = profile.trim();
+    if key.is_empty() && !profile.is_empty() {
+        let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+        if let Some(p) = profiles.iter().find(|p| p.name == profile) {
+            key = p.api_key.clone();
+        }
+    }
+    let models = blocked(move || backend::ai_list_models(&base, &key).map_err(anyhow::Error::msg))
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(serde_json::json!({ "models": models }))
+}
+
 #[tauri::command]
 async fn ai_generate_cmd(
     state: State<'_, AppState>,
@@ -1322,6 +1343,7 @@ fn main() {
             save_ai_profile,
             remove_ai_profile,
             set_ai_default,
+            ai_models_cmd,
             ai_generate_cmd
         ])
         .run(tauri::generate_context!())

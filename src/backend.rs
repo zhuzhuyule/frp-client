@@ -500,6 +500,67 @@ pub fn ai_endpoint_url(base: &str) -> String {
     }
 }
 
+/// /models 端点归一化：剥掉 chat/completions 后缀再补 /models
+pub fn ai_models_url(base: &str) -> String {
+    let b = base.trim().trim_end_matches('/');
+    let b = b.strip_suffix("/chat/completions").unwrap_or(b);
+    format!("{b}/models")
+}
+
+/// OpenAI 兼容的模型列表响应：data[].id（兼容 name/model 变体与裸数组），去空去重
+pub fn parse_models_json(text: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let arr = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for it in arr {
+        let name = it
+            .get("id")
+            .or_else(|| it.get("name"))
+            .or_else(|| it.get("model"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if !name.is_empty() && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// 连通性测试 = 拉一次模型列表，成功返回模型 id 列表
+pub fn ai_list_models(base: &str, key: &str) -> Result<Vec<String>, String> {
+    let url = ai_models_url(base);
+    let mut req = ureq::get(&url)
+        .set("User-Agent", "frp-client-tauri")
+        .timeout(Duration::from_secs(20));
+    if !key.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {key}"));
+    }
+    let resp = req.call().map_err(|e| match e {
+        ureq::Error::Status(401, _) | ureq::Error::Status(403, _) => {
+            format!("鉴权失败（{url} 返回 401/403），检查 API Key")
+        }
+        ureq::Error::Status(404, _) => {
+            format!("{url} 返回 404，这个服务可能不支持列出模型，直接手填模型名")
+        }
+        other => format!("连接 {url} 失败：{other}"),
+    })?;
+    let text = resp
+        .into_string()
+        .map_err(|e| format!("读取 {url} 响应失败：{e}"))?;
+    let models = parse_models_json(&text);
+    if models.is_empty() {
+        return Err("连接成功，但响应里没解析出模型列表，直接手填模型名".into());
+    }
+    Ok(models)
+}
+
 /// 喂给模型的现状描述。只含隧道公开参数，绝不带 token / webServer 密码
 pub fn build_ai_context(target: &str, store_mode: bool, proxies: &[ProxyCfg]) -> String {
     let mut s = format!(
@@ -2866,6 +2927,36 @@ maxFailed = 3
             ai_endpoint_url("http://127.0.0.1:11434/v1/chat/completions"),
             "http://127.0.0.1:11434/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn ai_models_url_variants() {
+        assert_eq!(ai_models_url("https://api.deepseek.com/v1"), "https://api.deepseek.com/v1/models");
+        assert_eq!(ai_models_url("http://127.0.0.1:11434/v1/"), "http://127.0.0.1:11434/v1/models");
+        assert_eq!(
+            ai_models_url("https://x.example/v1/chat/completions"),
+            "https://x.example/v1/models"
+        );
+        assert_eq!(ai_models_url("https://x.example"), "https://x.example/models");
+    }
+
+    #[test]
+    fn parse_models_json_variants() {
+        // 标准 OpenAI 形态
+        assert_eq!(
+            parse_models_json(r#"{"object":"list","data":[{"id":"deepseek-chat","object":"model"},{"id":"deepseek-reasoner"}]}"#),
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        );
+        // name/model 变体 + 去重 + 空 id 跳过
+        assert_eq!(
+            parse_models_json(r#"{"data":[{"name":"a"},{"model":"a"},{"id":""},{"id":"b"}]}"#),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // 裸数组回退
+        assert_eq!(parse_models_json(r#"[{"id":"qwen2.5"}]"#), vec!["qwen2.5".to_string()]);
+        // 非 JSON / 结构不符 → 空表（由调用方转成友好错误）
+        assert!(parse_models_json("<html>502</html>").is_empty());
+        assert!(parse_models_json(r#"{"error":{"message":"bad key"}}"#).is_empty());
     }
 
     #[test]

@@ -38,7 +38,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 - **本机控制台地址闸门**：防止把远端地址误写进本机 frpc 的 `webServer.addr` 导致服务起不来
 - **运行监控**：每台设备批量并发探活；本机 frpc 的 PID 之外还展示内存 / CPU 用量环、运行时长、二进制版本与 GitHub 最新 release 对比（可选更新检查）
 - **启停接管**：本机的任意 frpc 实例都可以从 App 启动 / 停止 / 重启——LaunchAgent 托管的走 `launchctl`，未托管的按 `-c` 配置路径定位进程后 kill + 重新拉起；徽标如实区分「托管」与「独立进程」
-- **AI 编排**：用自然语言描述需求（"把 3000 用 tcp 映射到 18080，再起一条 http 挂 blog.example.com"），调用所选模型生成隧道草案，逐条确认后才写入当前设备；支持同时保存多份 OpenAI 兼容服务配置（内置 DeepSeek / Kimi / 百炼 / Ollama 预设）并点选切换；API Key 只存本机 `app.toml`，喂给模型的上下文只含隧道公开参数、绝不含 token / 密码
+- **AI 编排**：用自然语言描述需求（"把 3000 用 tcp 映射到 18080，再起一条 http 挂 blog.example.com"），调用所选模型生成隧道草案，逐条确认后才写入当前设备；支持多份 OpenAI 兼容服务配置（内置 DeepSeek / Kimi / 百炼 / Ollama 预设），带连通性测试并可从 `/models` 返回的模型列表下拉选择；API Key 只存本机 `app.toml`，喂给模型的上下文只含隧道公开参数、绝不含 token / 密码
 - **凭据本地化**：设备凭据只存在 `~/.config/frp-client/app.toml`（权限 0600），不上传、不进入配置仓库
 - **日志页**：查看本机 frpc 的 stdout / stderr，按字节区间从文件末尾向前分页加载，「加载更早」逐页追加且无重复 / 遗漏
 

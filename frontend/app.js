@@ -32,7 +32,7 @@ const state = {
   // 设备弹窗：editing 为已有设备的 id（新建时为空）
   dev: { kind: "remote", editing: "" },
   // AI 编排：profiles 是后端 [[aiModel]] 的只读视图（key 只有 hasKey），default 是点选使用的那份
-  ai: { profiles: [], default: "", editing: "", drafts: [] },
+  ai: { profiles: [], default: "", editing: "", drafts: [], models: [] },
 };
 
 const PAGE_META = {
@@ -1338,6 +1338,7 @@ function openAiModal(original) {
   $("ai-f-model").value = p ? p.model : "";
   $("ai-f-key").value = "";
   $("ai-f-key").placeholder = p && p.hasKey ? "已保存，留空则保持不变" : "API Key（只存本机 app.toml）";
+  aiEndpointChanged();
   renderAiProviders();
   $("ai-mask").classList.remove("hidden");
   $("ai-f-name").focus();
@@ -1345,6 +1346,35 @@ function openAiModal(original) {
 
 function closeAiModal() {
   $("ai-mask").classList.add("hidden");
+  hideAiModels();
+}
+
+/* 模型列表：测连接后从 /models 拉来，输入时按子串过滤，也可直接手填 */
+const AI_TEST_NOTE = "用上面的地址和 Key 请求 /models，通了会自动出模型列表";
+
+function aiEndpointChanged() {
+  state.ai.models = [];
+  hideAiModels();
+  $("ai-test-note").textContent = AI_TEST_NOTE;
+}
+
+function showAiModels() {
+  const el = $("ai-model-list");
+  if (!state.ai.models.length) {
+    el.classList.add("hidden");
+    return;
+  }
+  const cur = $("ai-f-model").value.trim();
+  const q = cur.toLowerCase();
+  const ms = state.ai.models.filter((m) => !q || m.toLowerCase().includes(q));
+  el.innerHTML = ms.length
+    ? ms.map((m) => `<div class="ac-item${m === cur ? " on" : ""}">${esc(m)}</div>`).join("")
+    : `<div class="ac-empty">列表里没有匹配的，可直接手填</div>`;
+  el.classList.remove("hidden");
+}
+
+function hideAiModels() {
+  $("ai-model-list").classList.add("hidden");
 }
 
 function aiDraftMap(d) {
@@ -1431,9 +1461,47 @@ $("ai-providers").addEventListener("click", (e) => {
   if (!b) return;
   $("ai-f-base").value = b.dataset.base;
   $("ai-f-model").value = b.dataset.model;
+  aiEndpointChanged();
   renderAiProviders();
 });
-$("ai-f-base").addEventListener("input", renderAiProviders);
+$("ai-f-base").addEventListener("input", () => {
+  renderAiProviders();
+  aiEndpointChanged();
+});
+$("ai-f-key").addEventListener("input", aiEndpointChanged);
+$("ai-f-model").addEventListener("focus", showAiModels);
+$("ai-f-model").addEventListener("input", showAiModels);
+$("ai-f-model").addEventListener("blur", () => setTimeout(hideAiModels, 120));
+$("ai-f-model").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideAiModels();
+});
+$("ai-model-list").addEventListener("mousedown", (e) => {
+  const it = e.target.closest(".ac-item");
+  if (!it) return;
+  e.preventDefault(); // 赶在 input blur 之前，否则下拉先被关掉
+  $("ai-f-model").value = it.textContent;
+  hideAiModels();
+});
+$("btn-ai-test").addEventListener("click", async () => {
+  await withBusy(async () => {
+    const r = await call("ai_models_cmd", {
+      baseUrl: $("ai-f-base").value.trim(),
+      apiKey: $("ai-f-key").value.trim(),
+      profile: state.ai.editing,
+    });
+    if (!okv(r)) {
+      $("ai-test-note").textContent = "连接未通过，先看提示再改地址或 Key";
+      return;
+    }
+    state.ai.models = r.models || [];
+    $("ai-test-note").textContent = `连接成功 · ${state.ai.models.length} 个模型，点模型框即可选择`;
+    if (state.ai.models.length === 1 && !$("ai-f-model").value.trim()) {
+      $("ai-f-model").value = state.ai.models[0];
+    }
+    $("ai-f-model").focus();
+    showAiModels();
+  });
+});
 $("btn-ai-add").addEventListener("click", () => openAiModal(""));
 $("btn-ai-cancel").addEventListener("click", closeAiModal);
 $("ai-mask").addEventListener("click", (e) => {
