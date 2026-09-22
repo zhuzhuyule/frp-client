@@ -1377,32 +1377,44 @@ function hideAiModels() {
   $("ai-model-list").classList.add("hidden");
 }
 
-function aiDraftMap(d) {
-  const lp = d.localPort || "?";
-  return d.ptype === "http"
-    ? `本地 ${d.localIp || "127.0.0.1"}:${lp} → 域名 ${d.domain || "（未给，应用前需补）"}`
-    : `本地 ${d.localIp || "127.0.0.1"}:${lp} → frps 端口 ${d.remotePort || "（未给，应用前需补）"}`;
-}
-
 function renderAiDrafts() {
   const ds = state.ai.drafts;
   $("btn-ai-clear").classList.toggle("hidden", !ds.length);
   $("btn-ai-apply-all").classList.toggle("hidden", !ds.some((d) => d.st !== "ok"));
+  // 草案直接排成隧道页同款的行，所见即所得；成功/失败的补充说明挂在行下
   $("ai-drafts").innerHTML = ds
     .map(
-      (d, i) => `
+      (d, i) => {
+        const tc = typeCls(d.ptype);
+        const local = `${d.localIp || "127.0.0.1"}:${d.localPort || "?"}`;
+        const rMain = d.ptype === "http"
+          ? (d.domain || "域名待补")
+          : (d.remotePort ? ":" + d.remotePort : "远程端口待补");
+        const badge = d.st === "ok"
+          ? '<span class="badge run">● 已应用</span>'
+          : d.st === "err"
+            ? `<span class="badge stop" title="${esc(d.msg || "应用失败")}">● 失败</span>`
+            : '<span class="badge ro">○ 草案</span>';
+        const msg = d.st === "ok" && d.note
+          ? `<div class="ad-ok">${esc(d.note)}</div>`
+          : d.st === "err"
+            ? `<div class="ad-err">${esc(d.msg || "应用失败")}</div>`
+            : "";
+        return `
     <div class="ai-draft ${d.st}">
-      <div class="ad-head">
-        <span class="ad-name">${esc(d.name)}</span>
-        <span class="tag ${typeCls(d.ptype)}">${typeTag(d.ptype)}</span>
-        <span class="flex1"></span>
-        <button class="btn sm ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""}>${d.st === "ok" ? "已应用" : d.st === "err" ? "重试" : "应用"}</button>
+      <div class="trow"${d.reason ? ` title="${esc(d.reason)}"` : ""}>
+        <div class="col-name">
+          <div class="t-ico ico ${tc}">${esc((d.name[0] || "?").toUpperCase())}</div>
+          <div class="t-name"><b title="${esc(d.name)}">${esc(d.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(d.ptype))}">${esc(typeTag(d.ptype))}</i></span></div>
+        </div>
+        <div class="col-local t-two"><span>${esc(local)}</span></div>
+        <div class="col-remote t-two" title="${esc(d.domain || (d.remotePort ? ":" + d.remotePort : ""))}"><span class="r-main">${esc(rMain)}</span>${d.reason ? `<span class="r-sub">${esc(d.reason)}</span>` : ""}</div>
+        <span class="col-status">${badge}</span>
+        <span class="col-edit"><button class="btn sm ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""}>${d.st === "ok" ? "已应用" : d.st === "err" ? "重试" : "应用"}</button></span>
       </div>
-      <div class="ad-map">${esc(aiDraftMap(d))}</div>
-      ${d.reason ? `<div class="ad-reason">${esc(d.reason)}</div>` : ""}
-      ${d.st === "ok" && d.note ? `<div class="ad-ok">${esc(d.note)}</div>` : ""}
-      ${d.st === "err" ? `<div class="ad-err">${esc(d.msg || "应用失败")}</div>` : ""}
-    </div>`
+      ${msg}
+    </div>`;
+      }
     )
     .join("");
 }
