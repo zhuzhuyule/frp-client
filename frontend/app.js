@@ -1381,15 +1381,18 @@ function renderAiDrafts() {
   const ds = state.ai.drafts;
   $("btn-ai-clear").classList.toggle("hidden", !ds.length);
   $("btn-ai-apply-all").classList.toggle("hidden", !ds.some((d) => d.st !== "ok"));
+  $("ai-drafts-head").classList.toggle("hidden", !ds.length);
+  const frps = ((state.cfg.basics || {}).serverAddr || "").trim() || "frps";
   // 草案直接排成隧道页同款的行，所见即所得；成功/失败的补充说明挂在行下
   $("ai-drafts").innerHTML = ds
     .map(
       (d, i) => {
         const tc = typeCls(d.ptype);
         const local = `${d.localIp || "127.0.0.1"}:${d.localPort || "?"}`;
-        const rMain = d.ptype === "http"
-          ? (d.domain || "域名待补")
-          : (d.remotePort ? ":" + d.remotePort : "远程端口待补");
+        // http 走 frps 的虚拟主端口（一般 80），展示成「FRP 地址:端口」而不是域名占位
+        const port = d.ptype === "http" ? (d.remotePort || "80") : d.remotePort;
+        const addr = `${frps}:${port || "待补"}`;
+        const rSub = d.ptype === "http" && d.domain ? d.domain : (d.reason || "");
         const badge = d.st === "ok"
           ? '<span class="badge run">● 已应用</span>'
           : d.st === "err"
@@ -1408,7 +1411,7 @@ function renderAiDrafts() {
           <div class="t-name"><b title="${esc(d.name)}">${esc(d.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(d.ptype))}">${esc(typeTag(d.ptype))}</i></span></div>
         </div>
         <div class="col-local t-two"><span>${esc(local)}</span></div>
-        <div class="col-remote t-two" title="${esc(d.domain || (d.remotePort ? ":" + d.remotePort : ""))}"><span class="r-main">${esc(rMain)}</span>${d.reason ? `<span class="r-sub">${esc(d.reason)}</span>` : ""}</div>
+        <div class="col-remote t-two" title="${esc(rSub ? `${addr} · ${rSub}` : addr)}"><span class="r-main">${esc(addr)}</span>${rSub ? `<span class="r-sub">${esc(rSub)}</span>` : ""}</div>
         <span class="col-status">${badge}</span>
         <span class="col-edit"><button class="btn sm ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""}>${d.st === "ok" ? "已应用" : d.st === "err" ? "重试" : "应用"}</button></span>
       </div>
