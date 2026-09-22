@@ -369,6 +369,217 @@ fn write_app_doc(doc: &DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/* ---------------- AI 编排 ---------------- */
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiCfg {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: String,
+}
+
+pub fn load_ai() -> AiCfg {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return AiCfg::default();
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return AiCfg::default();
+    };
+    let Some(Item::Table(t)) = doc.get("ai") else {
+        return AiCfg::default();
+    };
+    let s = |k: &str| -> String {
+        t.get(k)
+            .and_then(|it| it.as_value())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    AiCfg {
+        base_url: s("baseUrl"),
+        model: s("model"),
+        api_key: s("apiKey"),
+    }
+}
+
+/// 整体替换 [ai] 表，其它表原样保留；三段全空时删掉整节
+pub fn save_ai(cfg: &AiCfg) -> Result<()> {
+    let path = app_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("创建 {} 失败", dir.display()))?;
+    }
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Err(_) => DocumentMut::new(),
+    };
+    if cfg.base_url.is_empty() && cfg.model.is_empty() && cfg.api_key.is_empty() {
+        doc.remove("ai");
+    } else {
+        let mut t = Table::new();
+        t["baseUrl"] = value(cfg.base_url.as_str());
+        t["model"] = value(cfg.model.as_str());
+        t["apiKey"] = value(cfg.api_key.as_str());
+        doc["ai"] = Item::Table(t);
+    }
+    write_app_doc(&doc)
+}
+
+/// 一条隧道草案。端口等一律保持字符串 —— 应用时才走 validate_new 的统一校验
+#[derive(Clone, Debug)]
+pub struct AiDraft {
+    pub name: String,
+    pub ptype: String,
+    pub local_ip: String,
+    pub local_port: String,
+    pub remote_port: String,
+    pub domain: String,
+    pub reason: String,
+}
+
+pub fn ai_endpoint_url(base: &str) -> String {
+    let b = base.trim().trim_end_matches('/');
+    if b.ends_with("/chat/completions") {
+        b.to_string()
+    } else {
+        format!("{b}/chat/completions")
+    }
+}
+
+/// 喂给模型的现状描述。只含隧道公开参数，绝不带 token / webServer 密码
+pub fn build_ai_context(target: &str, store_mode: bool, proxies: &[ProxyCfg]) -> String {
+    let mut s = format!(
+        "目标 frpc 实例「{target}」，隧道生效方式：{}。\n现有隧道：\n",
+        if store_mode { "store（写入即实时生效）" } else { "配置文件（暂存后写入）" }
+    );
+    if proxies.is_empty() {
+        s.push_str("（无）\n");
+    }
+    for p in proxies {
+        let tail = match (p.ptype.as_str(), p.remote_port.trim(), p.domains.trim()) {
+            ("http", _, d) if !d.is_empty() => format!("，域名 {d}"),
+            (_, rp, _) if !rp.is_empty() => format!("，远程端口 {rp}"),
+            _ => String::new(),
+        };
+        s.push_str(&format!(
+            "- {} ({}): 本地 {}:{}{tail}\n",
+            p.name, p.ptype, p.local_ip, p.local_port
+        ));
+    }
+    s
+}
+
+/// 容忍 ```json 围栏和键名变体（localIP/local_port…）。
+/// name 为空或类型不在 {tcp,udp,http} 的条目跳过 —— 草案阶段从宽，应用时由 validate_new 兜底
+pub fn parse_ai_drafts(text: &str) -> Result<Vec<AiDraft>, String> {
+    let mut t = text.trim().to_string();
+    if let (Some(a), Some(b)) = (t.find("```"), t.rfind("```")) {
+        if b > a + 3 {
+            t = t[a + 3..b].trim_start_matches("json").trim().to_string();
+        }
+    }
+    // 顶层对象取 {..}，顶层数组取 [..]，都容忍前后夹带解释文字
+    let (open, close) = if t.trim_start().starts_with('[') {
+        ('[', ']')
+    } else {
+        ('{', '}')
+    };
+    let (Some(start), Some(end)) = (t.find(open), t.rfind(close)) else {
+        return Err("模型没有返回 JSON".into());
+    };
+    if end < start {
+        return Err("模型输出不是合法 JSON".into());
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&t[start..=end]).map_err(|e| format!("解析模型输出失败：{e}"))?;
+    let arr = match v.get("tunnels").and_then(|x| x.as_array()) {
+        Some(a) => Some(a.clone()),
+        None => v.as_array().cloned(),
+    };
+    let Some(arr) = arr else {
+        return Err("模型输出里没有 tunnels 数组".into());
+    };
+    let pick = |o: &serde_json::Value, keys: &[&str]| -> String {
+        for k in keys {
+            match o.get(*k) {
+                Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+                    return s.trim().to_string()
+                }
+                Some(serde_json::Value::Number(n)) => return n.to_string(),
+                _ => continue,
+            }
+        }
+        String::new()
+    };
+    let mut out = Vec::new();
+    for item in &arr {
+        let name = pick(item, &["name"]);
+        let ptype = pick(item, &["type", "ptype"]).to_lowercase();
+        if name.is_empty() || !matches!(ptype.as_str(), "tcp" | "udp" | "http") {
+            continue;
+        }
+        let local_ip = pick(item, &["localIp", "localIP", "local_ip"]);
+        out.push(AiDraft {
+            name,
+            ptype,
+            local_ip: if local_ip.is_empty() {
+                "127.0.0.1".into()
+            } else {
+                local_ip
+            },
+            local_port: pick(item, &["localPort", "local_port"]),
+            remote_port: pick(item, &["remotePort", "remote_port"]),
+            domain: pick(item, &["domains", "customDomains", "domain"]),
+            reason: pick(item, &["reason", "note", "description"]),
+        });
+    }
+    if out.is_empty() {
+        return Err("模型输出里没有可用的隧道（name 缺失或类型不是 tcp/udp/http）".into());
+    }
+    Ok(out)
+}
+
+pub fn ai_generate(cfg: &AiCfg, prompt: &str, context: &str) -> Result<Vec<AiDraft>, String> {
+    let system = format!(
+        "你是 frpc（fatedier/frp）隧道编排助手，只支持三种隧道类型：tcp、udp、http。\n\
+         规则：\n\
+         - tcp/udp 必须给出 remotePort（frps 上暴露的端口）；http 必须给出 domains（逗号分隔）。\n\
+         - name 用小写字母/数字/短横线；端口是 1-65535 的整数；不能与现有隧道重名或撞远程端口。\n\
+         - 不要虚构用户没提到的隧道。\n\
+         - 只输出一个 JSON 对象，不要任何解释文字或 markdown 代码块，形如：\n\
+           {{\"tunnels\":[{{\"name\":\"...\",\"type\":\"tcp\",\"localIp\":\"127.0.0.1\",\"localPort\":\"8080\",\"remotePort\":\"18080\",\"domains\":\"\",\"reason\":\"一句话说明\"}}]}}\n\
+         现状：\n{context}"
+    );
+    let body = serde_json::json!({
+        "model": cfg.model,
+        "temperature": 0.2,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": prompt },
+        ],
+    });
+    let url = ai_endpoint_url(&cfg.base_url);
+    let mut req = ureq::post(&url)
+        .set("User-Agent", "frp-client-tauri")
+        .timeout(Duration::from_secs(90));
+    if !cfg.api_key.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {}", cfg.api_key));
+    }
+    let v: serde_json::Value = req
+        .send_json(body)
+        .map_err(|e| format!("调用 {url} 失败：{e}"))?
+        .into_json()
+        .map_err(|e| format!("解析模型响应失败：{e}"))?;
+    let content = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .ok_or("模型响应里没有 choices[0].message.content（检查地址与模型名是否正确）")?;
+    parse_ai_drafts(content)
+}
+
 /// 本机一个 frpc 实例：配置文件 + 控制台凭据 + 运行状态
 #[derive(Clone, Debug)]
 pub struct LocalInstance {
@@ -2519,6 +2730,18 @@ maxFailed = 3
         save_remotes(&[]).unwrap();
         assert_eq!(load_locals(), ls);
         assert!(load_remotes().unwrap().is_empty());
+        // [ai] 与其它表共存；save_ai 只替换 [ai]
+        let ai = AiCfg {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            api_key: "sk-secret".into(),
+        };
+        save_ai(&ai).unwrap();
+        assert_eq!(load_ai(), ai);
+        assert_eq!(load_locals(), ls); // [ai] 写入不冲掉 [[local]]
+        // 三段全空 → 删掉整节
+        save_ai(&AiCfg::default()).unwrap();
+        assert_eq!(load_ai(), AiCfg::default());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2527,6 +2750,70 @@ maxFailed = 3
         }
         std::env::remove_var("HOME");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_ai_drafts_tolerates_fences_and_key_variants() {
+        let raw = "```json\n{\"tunnels\":[\n  {\"name\":\"web\",\"type\":\"TCP\",\"localIP\":\"0.0.0.0\",\"localPort\":8080,\"customDomains\":\"a.com, b.com\",\"reason\":\"Web 服务\"},\n  {\"name\":\"dns\",\"ptype\":\"udp\",\"local_port\":\"53\",\"remote_port\":53},\n  {\"name\":\"bad\",\"type\":\"stcp\"}\n]}\n``` 以上是我的方案";
+        let ds = parse_ai_drafts(raw).unwrap();
+        // stcp 不支持 → 跳过；tcp/udp 保留
+        assert_eq!(ds.len(), 2);
+        assert_eq!(ds[0].name, "web");
+        assert_eq!(ds[0].ptype, "tcp");
+        assert_eq!(ds[0].local_ip, "0.0.0.0");
+        assert_eq!(ds[0].local_port, "8080"); // 数字端口被归一成字符串
+        assert_eq!(ds[0].domain, "a.com, b.com");
+        assert_eq!(ds[0].reason, "Web 服务");
+        assert_eq!(ds[1].remote_port, "53");
+        // localIp 缺省补 127.0.0.1
+        assert_eq!(ds[1].local_ip, "127.0.0.1");
+    }
+
+    #[test]
+    fn parse_ai_drafts_rejects_non_json_and_empty() {
+        assert!(parse_ai_drafts("我需要更多信息").is_err());
+        assert!(parse_ai_drafts("{\"tunnels\":[]}").is_err());
+        assert!(parse_ai_drafts("{\"tunnels\":[{\"name\":\"\",\"type\":\"tcp\"}]}").is_err());
+    }
+
+    #[test]
+    fn ai_endpoint_url_variants() {
+        assert_eq!(
+            ai_endpoint_url("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            ai_endpoint_url("http://127.0.0.1:11434/v1/chat/completions"),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn ai_context_lists_tunnels_without_secrets() {
+        let p = ProxyCfg {
+            name: "web".into(),
+            ptype: "http".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: "3000".into(),
+            remote_port: "".into(),
+            domains: "a.example.com".into(),
+            adv: ProxyAdv::default(),
+        };
+        let s = build_ai_context("本机一", true, &[p]);
+        assert!(s.contains("web (http)"));
+        assert!(s.contains("a.example.com"));
+        assert!(s.contains("store"));
+        let empty = build_ai_context("x", false, &[]);
+        assert!(empty.contains("（无）"));
+        assert!(empty.contains("配置文件"));
+    }
+
+    #[test]
+    fn parse_ai_drafts_accepts_bare_array() {
+        // 纯数组回退：顶层就是数组也要能读
+        let ds = parse_ai_drafts("[{\"name\":\"t1\",\"type\":\"tcp\",\"localPort\":\"22\",\"remotePort\":\"2222\"}]").unwrap();
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].name, "t1");
     }
 
     #[test]

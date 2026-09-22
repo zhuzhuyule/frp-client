@@ -114,12 +114,37 @@
       </div>
     </section>
 
-    <!-- ============ AI 编排（占位） ============ -->
+    <!-- ============ AI 编排 ============ -->
     <section id="page-ai" class="page col">
-      <div class="card ai-card">
-        <div class="ai-glyph">✦</div>
-        <div class="ai-title">AI 编排 · 规划中</div>
-        <div class="ai-sub">用自然语言描述需求，自动生成 frpc 隧道配置草案。<br />该能力尚未实现，当前请使用「配置预览」页手动管理隧道。</div>
+      <div class="tt-wrap">
+        <div id="atabs" class="ttabs"></div>
+        <div class="card ai-panel">
+          <div class="ai-sec">
+            <div class="ai-sec-h"><span class="ai-sec-t">服务设置</span><span id="ai-note" class="hint"></span></div>
+            <div class="ai-grid">
+              <label class="field wide"><span>API 地址<i class="f-key">base_url</i></span><input id="ai-base" placeholder="https://api.openai.com/v1" /></label>
+              <label class="field"><span>模型<i class="f-key">model</i></span><input id="ai-model" placeholder="如 gpt-4o-mini / deepseek-chat" /></label>
+              <label class="field"><span>API Key<i class="f-key">api_key</i></span><input id="ai-key" type="password" placeholder="API Key（只存本机 app.toml）" /></label>
+            </div>
+            <div class="presets" id="ai-providers"></div>
+            <div class="ai-sec-foot">
+              <span class="hint">走 OpenAI 兼容的 /chat/completions，DeepSeek / Kimi / 百炼 / Ollama 都可直接填地址</span>
+              <span class="flex1"></span>
+              <button id="btn-ai-save" class="btn sm">保存设置</button>
+            </div>
+          </div>
+          <div class="ai-sec">
+            <div class="ai-sec-h"><span class="ai-sec-t">生成隧道草案</span><span class="hint">草案不会自动写入，逐条确认后才加到当前设备</span></div>
+            <textarea id="ai-prompt" rows="3" placeholder="例如：把本机 8080 的 web 服务用 tcp 映射到远程 18080；再起一条 http 隧道，把 3000 挂到 app.example.com"></textarea>
+            <div class="ai-sec-foot">
+              <button id="btn-ai-clear" class="btn sm ghost hidden">清空草案</button>
+              <span class="flex1"></span>
+              <button id="btn-ai-apply-all" class="btn sm hidden">应用全部</button>
+              <button id="btn-ai-gen" class="btn sm primary">生成草案</button>
+            </div>
+          </div>
+          <div id="ai-drafts" class="ai-drafts"></div>
+        </div>
       </div>
     </section>
 

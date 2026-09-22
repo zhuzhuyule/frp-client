@@ -1111,6 +1111,87 @@ async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String,
     .await
 }
 
+/* ---------------- AI 编排 ---------------- */
+
+#[tauri::command]
+async fn get_ai_cfg() -> Result<serde_json::Value, String> {
+    let c = backend::load_ai();
+    // key 永远不出后端，前端只拿 hasKey 决定占位文案
+    Ok(serde_json::json!({
+        "baseUrl": c.base_url,
+        "model": c.model,
+        "hasKey": !c.api_key.is_empty(),
+    }))
+}
+
+#[tauri::command]
+async fn save_ai_cmd(base_url: String, model: String, api_key: String) -> Result<String, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err("API 地址要以 http:// 或 https:// 开头".into());
+    }
+    if model.trim().is_empty() {
+        return Err("模型名不能为空".into());
+    }
+    let mut c = backend::load_ai();
+    c.base_url = base;
+    c.model = model.trim().to_string();
+    // 留空 = 保留已存的 key（前端拿不到旧 key，没法回填）
+    let key = api_key.trim();
+    if !key.is_empty() {
+        c.api_key = key.to_string();
+    }
+    backend::save_ai(&c).map_err(|e| format!("{e:#}"))?;
+    Ok("AI 服务设置已保存".into())
+}
+
+#[tauri::command]
+async fn ai_generate_cmd(
+    state: State<'_, AppState>,
+    prompt: String,
+) -> Result<serde_json::Value, String> {
+    let cfg = backend::load_ai();
+    if cfg.base_url.is_empty() || cfg.model.is_empty() {
+        return Err("先在本页上方的服务设置里填 API 地址与模型并保存".into());
+    }
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("先描述需求".into());
+    }
+    if prompt.chars().count() > 2000 {
+        return Err("需求描述太长（上限 2000 字）".into());
+    }
+    let target = match active_of(&state) {
+        Active::Remote(n) => n,
+        Active::Local(id) => state
+            .locals
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.name.clone())
+            .unwrap_or(id),
+    };
+    let (effective, store_mode) = effective_proxies(&state).await;
+    let proxies: Vec<ProxyCfg> = effective.into_iter().map(|(c, _)| c).collect();
+    let context = backend::build_ai_context(&target, store_mode, &proxies);
+    let drafts = blocked(move || {
+        backend::ai_generate(&cfg, &prompt, &context).map_err(anyhow::Error::msg)
+    })
+    .await?;
+    Ok(serde_json::json!({
+        "tunnels": drafts.iter().map(|d| serde_json::json!({
+            "name": d.name,
+            "ptype": d.ptype,
+            "localIp": d.local_ip,
+            "localPort": d.local_port,
+            "remotePort": d.remote_port,
+            "domain": d.domain,
+            "reason": d.reason,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
 fn main() {
     let locals = discover_locals();
     let remotes = load_remotes().unwrap_or_default();
@@ -1155,7 +1236,10 @@ fn main() {
             parse_raw_cmd,
             proc_cmd,
             read_log,
-            reveal_file
+            reveal_file,
+            get_ai_cfg,
+            save_ai_cmd,
+            ai_generate_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

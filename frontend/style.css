@@ -471,6 +471,37 @@ body {
 .ai-title { font-size: 16px; font-weight: 700; color: var(--text-strong); }
 .ai-sub { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.7; }
 
+/* ---------- AI 编排页 ---------- */
+.ai-panel { display: flex; flex-direction: column; gap: 16px; padding: 16px; overflow: auto; flex: none; }
+.ai-sec { display: flex; flex-direction: column; gap: 8px; }
+.ai-sec + .ai-sec { padding-top: 14px; border-top: 1px solid var(--border); }
+.ai-sec-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ai-sec-t { font-size: 13px; font-weight: 700; color: var(--text-strong); }
+.ai-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.ai-grid .field.wide { grid-column: 1 / -1; }
+.ai-sec-foot { display: flex; align-items: center; gap: 10px; }
+#ai-prompt {
+  width: 100%; min-height: 62px; resize: vertical;
+  border-radius: 8px; border: 1px solid #d8dee9; padding: 8px 10px;
+  font: inherit; font-size: 12.5px; line-height: 1.6; color: var(--text-strong);
+  outline: none; background: #fff; user-select: text;
+  transition: border-color .15s, box-shadow .15s;
+}
+#ai-prompt:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.ai-drafts { display: flex; flex-direction: column; gap: 8px; }
+.ai-draft {
+  border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; background: var(--bg-row);
+}
+.ai-draft.ok { border-color: #bbe7cd; background: var(--ok-soft); }
+.ai-draft.err { border-color: #fbd5d5; background: var(--danger-soft); }
+.ad-head { display: flex; align-items: center; gap: 8px; }
+.ad-name { font-weight: 600; font-size: 13px; color: var(--text-strong); }
+.ad-map { font-size: 12px; color: var(--text); }
+.ad-reason { font-size: 11.5px; color: var(--muted); }
+.ad-ok { font-size: 11.5px; color: var(--ok); }
+.ad-err { font-size: 11.5px; color: var(--danger); }
+
 /* ---------- confirm modal ---------- */
 .mask {
   position: fixed; inset: 0; z-index: 900;

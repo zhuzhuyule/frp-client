@@ -31,12 +31,14 @@ const state = {
   srv: { tab: "ui", raw: "", dirty: false },
   // 设备弹窗：editing 为已有设备的 id（新建时为空）
   dev: { kind: "remote", editing: "" },
+  // AI 编排：cfg 是后端 [ai] 的只读视图（key 只有 hasKey），drafts 是生成的草案
+  ai: { cfg: { baseUrl: "", model: "", hasKey: false }, drafts: [] },
 };
 
 const PAGE_META = {
   tunnels: ["隧道管理", "查看隧道与本机进程 · 直接增删映射"],
   config: ["配置预览", "这台设备的连接方式与它自己的配置 · 点右下角进入编辑"],
-  ai: ["AI 编排", "自然语言生成隧道配置（规划中）"],
+  ai: ["AI 编排", "自然语言生成隧道草案 · 逐条确认后应用到当前设备"],
   logs: ["日志", "查看 frpc 标准输出 / 标准错误日志"],
 };
 
@@ -160,6 +162,7 @@ function showPage(p) {
   $("page-sub").textContent = PAGE_META[p][1];
   if (p === "tunnels") renderTunnels();
   if (p === "config") { renderConfigOverview(); renderTargetTabs(); }
+  if (p === "ai") renderTargetTabs();
   if (p === "logs") loadLog();
 }
 
@@ -264,7 +267,7 @@ function bindTabs(el) {
 
 function renderTargetTabs() {
   const html = tabsHtml();
-  for (const id of ["ttabs", "ctabs"]) {
+  for (const id of ["ttabs", "ctabs", "atabs"]) {
     const el = $(id);
     el.innerHTML = html;
     bindTabs(el);
@@ -1274,6 +1277,163 @@ $("btn-reveal-log").addEventListener("click", async () => {
   if (okv(msg)) toast(msg, "ok");
 });
 
+/* ---------- AI 编排 ---------- */
+/* 常用 OpenAI 兼容服务：点 chip 填 base_url + 一个能用的模型名，仍可手改 */
+const AI_PROVIDERS = [
+  ["OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"],
+  ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"],
+  ["Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"],
+  ["百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
+  ["Ollama 本地", "http://127.0.0.1:11434/v1", "qwen2.5"],
+];
+
+function renderAiProviders() {
+  const cur = $("ai-base").value.trim().replace(/\/+$/, "");
+  $("ai-providers").innerHTML = AI_PROVIDERS.map(([n, u, m]) =>
+    `<button class="preset ${cur === u ? "on" : ""}" data-base="${esc(u)}" data-model="${esc(m)}" title="${esc(u)}">${esc(n)}</button>`
+  ).join("");
+}
+
+async function loadAiCfg() {
+  const c = await call("get_ai_cfg");
+  if (!okv(c)) return;
+  state.ai.cfg = c;
+  $("ai-base").value = c.baseUrl || "";
+  $("ai-model").value = c.model || "";
+  $("ai-key").value = "";
+  $("ai-key").placeholder = c.hasKey ? "已保存，留空则保持不变" : "API Key（只存本机 app.toml）";
+  $("ai-note").textContent = c.baseUrl && c.model ? `当前调用 ${c.model}` : "尚未配置，生成前需要先保存";
+  renderAiProviders();
+}
+
+function aiDraftMap(d) {
+  const lp = d.localPort || "?";
+  return d.ptype === "http"
+    ? `本地 ${d.localIp || "127.0.0.1"}:${lp} → 域名 ${d.domain || "（未给，应用前需补）"}`
+    : `本地 ${d.localIp || "127.0.0.1"}:${lp} → frps 端口 ${d.remotePort || "（未给，应用前需补）"}`;
+}
+
+function renderAiDrafts() {
+  const ds = state.ai.drafts;
+  $("btn-ai-clear").classList.toggle("hidden", !ds.length);
+  $("btn-ai-apply-all").classList.toggle("hidden", !ds.some((d) => d.st !== "ok"));
+  $("ai-drafts").innerHTML = ds
+    .map(
+      (d, i) => `
+    <div class="ai-draft ${d.st}">
+      <div class="ad-head">
+        <span class="ad-name">${esc(d.name)}</span>
+        <span class="tag ${typeCls(d.ptype)}">${typeTag(d.ptype)}</span>
+        <span class="flex1"></span>
+        <button class="btn sm ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""}>${d.st === "ok" ? "已应用" : d.st === "err" ? "重试" : "应用"}</button>
+      </div>
+      <div class="ad-map">${esc(aiDraftMap(d))}</div>
+      ${d.reason ? `<div class="ad-reason">${esc(d.reason)}</div>` : ""}
+      ${d.st === "ok" && d.note ? `<div class="ad-ok">${esc(d.note)}</div>` : ""}
+      ${d.st === "err" ? `<div class="ad-err">${esc(d.msg || "应用失败")}</div>` : ""}
+    </div>`
+    )
+    .join("");
+}
+
+async function aiApplyOne(i) {
+  const d = state.ai.drafts[i];
+  if (!d || d.st === "ok") return;
+  const np = {
+    name: d.name,
+    ptype: d.ptype,
+    localIp: d.localIp || "127.0.0.1",
+    localPort: d.localPort,
+    remotePort: d.remotePort,
+    domain: d.domain,
+    encrypt: "", compress: "", bandwidth: "", hcType: "", hcInterval: "", hcFailed: "",
+  };
+  try {
+    // 直连 invoke：逐条结果印在卡片上，不挨个弹 toast
+    d.note = await invoke("add_proxy_cmd", { np });
+    d.st = "ok";
+    d.msg = "";
+  } catch (e) {
+    d.st = "err";
+    d.msg = String(e);
+  }
+}
+
+async function aiApply(indices) {
+  await withBusy(async () => {
+    let ok = 0;
+    let bad = 0;
+    for (const i of indices) {
+      await aiApplyOne(i);
+      if (state.ai.drafts[i].st === "ok") ok++;
+      else bad++;
+    }
+    if (ok) {
+      await loadConfig();
+      if (!state.storeMode) setDirty(true);
+      await refreshStatus();
+    }
+    renderAiDrafts();
+    if (bad) toast(`应用了 ${ok} 条，${bad} 条失败，原因见草案卡片`, "err");
+    else
+      toast(
+        state.storeMode
+          ? `${ok} 条隧道已实时生效，无需重启`
+          : `${ok} 条已加入暂存，点右上角「保存」写入目标`,
+        "ok"
+      );
+  });
+}
+
+$("ai-providers").addEventListener("click", (e) => {
+  const b = e.target.closest(".preset");
+  if (!b) return;
+  $("ai-base").value = b.dataset.base;
+  $("ai-model").value = b.dataset.model;
+  renderAiProviders();
+});
+$("ai-base").addEventListener("input", renderAiProviders);
+$("btn-ai-save").addEventListener("click", async () => {
+  await withBusy(async () => {
+    const r = await call("save_ai_cmd", {
+      baseUrl: $("ai-base").value.trim(),
+      model: $("ai-model").value.trim(),
+      apiKey: $("ai-key").value.trim(),
+    });
+    if (!okv(r)) return;
+    toast(r, "ok");
+    await loadAiCfg();
+  });
+});
+$("btn-ai-gen").addEventListener("click", async () => {
+  const prompt = $("ai-prompt").value.trim();
+  if (!prompt) {
+    toast("先描述需求", "err");
+    return;
+  }
+  await withBusy(async () => {
+    const r = await call("ai_generate_cmd", { prompt });
+    if (!okv(r)) return;
+    state.ai.drafts = (r.tunnels || []).map((t) => ({ ...t, st: "", msg: "" }));
+    renderAiDrafts();
+    toast(
+      state.ai.drafts.length ? `生成了 ${state.ai.drafts.length} 条草案，确认后应用` : "模型没有给出草案",
+      state.ai.drafts.length ? "ok" : "info"
+    );
+  });
+});
+$("btn-ai-clear").addEventListener("click", () => {
+  state.ai.drafts = [];
+  renderAiDrafts();
+});
+$("btn-ai-apply-all").addEventListener("click", () => {
+  aiApply(state.ai.drafts.map((d, i) => i).filter((i) => state.ai.drafts[i].st !== "ok"));
+});
+$("ai-drafts").addEventListener("click", (e) => {
+  const b = e.target.closest(".ad-apply");
+  if (b && !state.busy) aiApply([parseInt(b.dataset.i, 10)]);
+});
+
 /* ---------- global ---------- */
 $("btn-refresh").addEventListener("click", async () => {
   showSkeletons();
@@ -1291,6 +1451,7 @@ $("btn-refresh").addEventListener("click", async () => {
   await loadConfig();
   applyMode();
   clearStale();
+  loadAiCfg();
   let tick = 0;
   setInterval(() => {
     if (document.hidden || state.busy) return;
