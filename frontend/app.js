@@ -32,7 +32,7 @@ const state = {
   // 设备弹窗：editing 为已有设备的 id（新建时为空）
   dev: { kind: "remote", editing: "" },
   // AI 编排：profiles 是后端 [[aiModel]] 的只读视图（key 只有 hasKey），default 是点选使用的那份
-  ai: { profiles: [], default: "", editing: "", drafts: [], models: [] },
+  ai: { profiles: [], default: "", editing: "", drafts: [], models: [], editDraft: null },
 };
 
 const PAGE_META = {
@@ -82,6 +82,7 @@ const SVG = (d) =>
   `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const ICO_EDIT = SVG('<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />');
 const ICO_DEL = SVG('<path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />');
+const ICO_OK = SVG('<path d="M20 6 9 17l-5-5" />');
 
 /* ---------- toast ---------- */
 function toast(text, kind = "ok") {
@@ -1163,6 +1164,7 @@ function openEditProxy(name) {
 function closeAddProxy() {
   $("proxy-mask").classList.add("hidden");
   state.editing = null;
+  state.ai.editDraft = null;
 }
 $("btn-add-cancel").addEventListener("click", closeAddProxy);
 $("n-hc").addEventListener("change", syncHc);
@@ -1182,6 +1184,31 @@ $("btn-add").addEventListener("click", async () => {
   };
   if (!np.name) {
     toast("名称不能为空", "err");
+    return;
+  }
+  const di = state.ai.editDraft;
+  if (di !== null) {
+    const d = state.ai.drafts[di];
+    if (!d) {
+      closeAddProxy();
+      return;
+    }
+    await withBusy(async () => {
+      Object.assign(d, np);
+      d.st = "";
+      d.msg = "";
+      await aiApplyOne(di);
+      renderAiDrafts();
+      if (d.st !== "ok") {
+        toast(d.msg || "应用失败，可在弹窗里继续修改", "err");
+        return;
+      }
+      closeAddProxy();
+      await loadConfig();
+      if (!state.storeMode) setDirty(true);
+      await refreshStatus();
+      toast(typeof d.note === "string" && d.note ? d.note : "草案已应用", "ok");
+    });
     return;
   }
   const editing = state.editing;
@@ -1413,13 +1440,38 @@ function renderAiDrafts() {
         <div class="col-local t-two"><span>${esc(local)}</span></div>
         <div class="col-remote t-two" title="${esc(rSub ? `${addr} · ${rSub}` : addr)}"><span class="r-main">${esc(addr)}</span>${rSub ? `<span class="r-sub">${esc(rSub)}</span>` : ""}</div>
         <span class="col-status">${badge}</span>
-        <span class="col-edit"><button class="btn sm ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""}>${d.st === "ok" ? "已应用" : d.st === "err" ? "重试" : "应用"}</button></span>
+        <span class="col-edit">
+          <button class="btn icon ad-edit" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="编辑这条草案">${ICO_EDIT}</button>
+          <button class="btn icon ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="${d.st === "ok" ? "已应用" : d.st === "err" ? "重试应用到当前设备" : "应用到当前设备"}">${ICO_OK}</button>
+        </span>
       </div>
       ${msg}
     </div>`;
       }
     )
     .join("");
+}
+
+/* 草案就地编辑：借用隧道弹窗，保存 = 写回草案并立即应用到当前目标 */
+function openEditDraft(i) {
+  const d = state.ai.drafts[i];
+  if (!d || d.st === "ok") return;
+  state.editing = null;
+  state.ai.editDraft = i;
+  $("proxy-title").textContent = `编辑草案 · ${d.name}`;
+  $("btn-add").textContent = "保存并应用";
+  $("proxy-hint").textContent = "改好后保存，这条会直接应用到当前目标";
+  $("n-name").value = d.name || "";
+  $("n-type").value = ["tcp", "http", "udp"].includes(d.ptype) ? d.ptype : "tcp";
+  $("n-local-ip").value = d.localIp || "127.0.0.1";
+  $("n-local-port").value = d.localPort || "";
+  $("n-remote-port").value = d.remotePort || "";
+  $("n-domain").value = d.domain || "";
+  renderProxyPresets(null);
+  styleAdv();
+  setAdv(d);
+  $("proxy-mask").classList.remove("hidden");
+  $("n-name").focus();
 }
 
 async function aiApplyOne(i) {
@@ -1596,8 +1648,14 @@ $("btn-ai-apply-all").addEventListener("click", () => {
   aiApply(state.ai.drafts.map((d, i) => i).filter((i) => state.ai.drafts[i].st !== "ok"));
 });
 $("ai-drafts").addEventListener("click", (e) => {
+  if (state.busy) return;
+  const ed = e.target.closest(".ad-edit");
+  if (ed) {
+    openEditDraft(parseInt(ed.dataset.i, 10));
+    return;
+  }
   const b = e.target.closest(".ad-apply");
-  if (b && !state.busy) aiApply([parseInt(b.dataset.i, 10)]);
+  if (b) aiApply([parseInt(b.dataset.i, 10)]);
 });
 
 /* ---------- global ---------- */
