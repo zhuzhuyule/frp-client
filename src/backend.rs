@@ -87,12 +87,16 @@ fn target_from_config(config_path: &Path) -> Result<Target> {
     })
 }
 
+/// Windows 没有 HOME，只有 USERPROFILE；测试通过 HOME 注入临时目录，故 HOME 优先
+pub fn home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into())
+}
+
 fn expand_tilde(raw: &str) -> PathBuf {
     match raw.strip_prefix("~/") {
-        Some(rest) => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-            PathBuf::from(home).join(rest)
-        }
+        Some(rest) => PathBuf::from(home_dir()).join(rest),
         None => PathBuf::from(raw),
     }
 }
@@ -149,8 +153,7 @@ pub fn check_local_console_addr(addr: &str) -> Result<()> {
 // ---------- remote targets (app-owned config) ----------
 
 pub fn app_config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-    PathBuf::from(home).join(".config/frp-client/app.toml")
+    PathBuf::from(home_dir()).join(".config/frp-client/app.toml")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -351,12 +354,16 @@ pub fn save_locals(items: &[LocalSaved]) -> Result<()> {
 }
 
 fn write_app_doc(doc: &DocumentMut) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let path = app_config_path();
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).context("写 app.toml 失败")?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-        .context("app.toml 权限设置失败")?;
+    // 0600 是 POSIX 语义；Windows 上 ACL 由用户目录继承，无对应概念
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .context("app.toml 权限设置失败")?;
+    }
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("替换 {} 失败", path.display()))?;
     Ok(())
@@ -378,7 +385,7 @@ pub struct LocalInstance {
 
 /// 常见安装位置的 frpc.toml
 pub fn local_config_candidates() -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+    let home = home_dir();
     vec![
         PathBuf::from(DEFAULT_CONFIG_PATH),
         PathBuf::from("/usr/local/etc/frpc/frpc.toml"),
@@ -2326,9 +2333,12 @@ maxFailed = 3
         save_remotes(&[]).unwrap();
         assert_eq!(load_locals(), ls);
         assert!(load_remotes().unwrap().is_empty());
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(app_config_path()).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(app_config_path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         std::env::remove_var("HOME");
         std::fs::remove_dir_all(&dir).ok();
     }

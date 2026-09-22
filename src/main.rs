@@ -442,11 +442,7 @@ async fn add_local(
     }
     // 与探测到的实例用同一套字面路径比较，所以这里不做 canonicalize（符号链接会改写路径）
     let id = match path.strip_prefix("~/") {
-        Some(rest) => format!(
-            "{}/{}",
-            std::env::var("HOME").unwrap_or_default(),
-            rest
-        ),
+        Some(rest) => format!("{}/{}", backend::home_dir(), rest),
         None => path.to_string(),
     };
     if !std::path::Path::new(&id).is_absolute() {
