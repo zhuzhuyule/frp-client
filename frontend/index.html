@@ -100,7 +100,7 @@
               <div class="kv"><span class="k">frps 服务端</span><span id="i-srv" class="v"></span></div>
               <div class="kv"><span class="k">控制台绑定</span><span id="i-web-cfg" class="v"></span></div>
               <div class="kv"><span class="k">隧道</span><span id="i-tc" class="v"></span></div>
-              <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span></div>
+              <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span><button id="btn-reveal-cfg" class="btn xs" title="在 Finder 中定位这台设备的 frpc.toml">在 Finder 中显示</button></div>
               <div class="kv"><span class="k">上次保存</span><span id="i-saved" class="v"></span></div>
             </div>
           </div>
@@ -126,9 +126,10 @@
     <!-- ============ 日志 ============ -->
     <section id="page-logs" class="page col">
       <div class="card logbar" id="log-local">
-        <button id="log-out" class="btn primary sm">frpc.log</button>
-        <button id="log-err" class="btn sm">frpc.err</button>
+        <button id="log-out" class="btn primary sm">运行日志</button>
+        <button id="log-err" class="btn sm">错误日志</button>
         <button id="log-refresh" class="btn sm">刷新</button>
+        <button id="btn-reveal-log" class="btn sm" title="在 Finder 中定位当前这个日志文件">在 Finder 中显示</button>
         <span id="log-path" class="flex1 right faint"></span>
       </div>
       <div class="card ai-card hidden" id="log-remote">
@@ -162,8 +163,13 @@
       <label class="field"><span>本地地址<i class="f-key">localIP</i></span><input id="n-local-ip" value="127.0.0.1" />
         <span class="presets" id="n-local-ip-presets"></span>
       </label>
-      <label class="field"><span>本地端口<i class="f-key">localPort</i></span><input id="n-local-port" placeholder="8080" /></label>
-      <label class="field"><span>映射端口<i class="f-key">remotePort</i></span><input id="n-remote-port" placeholder="tcp / udp 必填" /></label>
+      <label class="field"><span>本地端口<i class="f-key">localPort</i></span><input id="n-local-port" placeholder="如 8080" />
+        <span class="presets" id="n-local-port-presets"></span>
+      </label>
+      <label class="field"><span>映射端口<i class="f-key">remotePort</i></span><input id="n-remote-port" placeholder="如 9090" />
+        <span class="presets" id="n-remote-port-presets"></span>
+        <span class="fhint">tcp / udp 必填，http 可留空</span>
+      </label>
       <label class="field" title="http 类型才用，多个域名用逗号分隔"><span>域名<i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" /></label>
     </div>
     <div class="hint" id="proxy-hint">加入暂存列表后仍需点右上角的保存按钮写入当前目标</div>

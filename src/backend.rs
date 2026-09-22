@@ -1488,6 +1488,27 @@ pub fn read_config_file(t: &Target) -> Result<String> {
 
 // ---------- logs ----------
 
+/// 在 Finder 里选中并高亮一个文件。路径只来自已经读到的 logPath / configPath，
+/// 不经过 shell，所以这里只挡空串、相对路径和不存在的文件。
+pub fn reveal_in_finder(path: &str) -> Result<()> {
+    let p = path.trim();
+    if p.is_empty() || !p.starts_with('/') {
+        bail!("只能在 Finder 里定位一个绝对路径");
+    }
+    if !Path::new(p).exists() {
+        bail!("该文件还不存在：{p}");
+    }
+    let st = std::process::Command::new("open")
+        .arg("-R")
+        .arg(p)
+        .status()
+        .context("调用 open 失败")?;
+    if !st.success() {
+        bail!("Finder 没能定位到该文件");
+    }
+    Ok(())
+}
+
 pub fn tail(path: &Path, max_bytes: u64) -> Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)
@@ -2011,6 +2032,15 @@ remotePort = 2222
             password: String::new(),
         };
         assert!(probe_health(&dead).is_none());
+    }
+
+    #[test]
+    fn reveal_rejects_bad_paths() {
+        // 这几种都必须在调 open 之前拒掉：路径来自磁盘读取，不能顺手把相对路径丢给子进程
+        for bad in ["", "   ", "frpc.toml", "./frpc.toml", "~/x/frpc.toml"] {
+            assert!(reveal_in_finder(bad).is_err(), "{bad:?} 应当被拒");
+        }
+        assert!(reveal_in_finder("/tmp/definitely-not-here-9f3a2b.toml").is_err());
     }
 
     #[test]

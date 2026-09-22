@@ -6,7 +6,7 @@ use backend::{
     apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
     fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_port_owners,
     parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
-    read_config_file,
+    read_config_file, reveal_in_finder,
     remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
     save_remotes, start, stop, store_add, store_delete, store_proxies, store_replace,
     store_update, tail, validate_host, version_at_least, wait_ready,
@@ -1060,6 +1060,30 @@ async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, St
     .await
 }
 
+/// 在 Finder 里定位当前目标的文件。参数只收 log / err / config 三种枚举，
+/// 绝对路径一律由后端从活动实例取，前端塞不进任意路径。
+#[tauri::command]
+async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String, String> {
+    let id = match active_of(&state) {
+        Active::Local(id) => id,
+        Active::Remote(_) => {
+            return Err("远端设备的文件在它自己的机器上，这里定位不了".into());
+        }
+    };
+    let t = local_instance(&state, &id)?.target;
+    let path = match kind.as_str() {
+        "log" => t.log_path.clone(),
+        "err" => t.err_path.clone(),
+        _ => t.config_path.clone(),
+    };
+    blocked(move || {
+        let s = path.to_string_lossy().to_string();
+        reveal_in_finder(&s)?;
+        Ok(format!("已在 Finder 中定位 {s}"))
+    })
+    .await
+}
+
 fn main() {
     let locals = discover_locals();
     let remotes = load_remotes().unwrap_or_default();
@@ -1103,7 +1127,8 @@ fn main() {
             render_raw_cmd,
             parse_raw_cmd,
             proc_cmd,
-            read_log
+            read_log,
+            reveal_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

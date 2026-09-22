@@ -351,14 +351,17 @@ function renderPresets() {
   markPresets();
 }
 
-/* 本地地址的基底值：这台设备上已有隧道用过的地址排前面，其次回环和内网前缀
-   （前缀点完光标停在末尾，接着敲主机号，和设备弹窗那套一致） */
+/* 本地地址 / 端口的基底值：这台设备上其它隧道已经用过的排前面
+   映射端口反过来 —— 已被占用的不推荐，frps 会直接拒同名端口 */
 function renderProxyPresets(exceptName) {
-  const used = ((state.cfg && state.cfg.proxies) || [])
-    .filter((p) => p.name !== exceptName)
-    .map((p) => p.localIp)
-    .filter(Boolean);
-  presetChips("n-local-ip-presets", "n-local-ip", ["127.0.0.1"].concat(used, ["192.168.", "10."]));
+  const others = ((state.cfg && state.cfg.proxies) || []).filter((p) => p.name !== exceptName);
+  const ips = others.map((p) => p.localIp).filter(Boolean);
+  const localPorts = others.map((p) => String(p.localPort || "")).filter(Boolean);
+  const taken = new Set(others.map((p) => String(p.remotePort || "")).filter(Boolean));
+  const free = ["8080", "3000", "9000", "8000", "9090", "2080"].filter((v) => !taken.has(v)).slice(0, 3);
+  presetChips("n-local-ip-presets", "n-local-ip", ["127.0.0.1"].concat(ips, ["192.168.", "10."]));
+  presetChips("n-local-port-presets", "n-local-port", localPorts.concat(["8080", "3000", "8000"]));
+  presetChips("n-remote-port-presets", "n-remote-port", free);
   markPresets();
 }
 
@@ -377,7 +380,7 @@ document.addEventListener("click", (e) => {
   input.focus();
   markPresets();
 });
-["d-host", "d-port", "c-port", "c-web-addr", "c-web-port", "n-local-ip"].forEach((id) =>
+["d-host", "d-port", "c-port", "c-web-addr", "c-web-port", "n-local-ip", "n-local-port", "n-remote-port"].forEach((id) =>
   $(id).addEventListener("input", markPresets)
 );
 
@@ -455,6 +458,10 @@ $("btn-dv-rescan").addEventListener("click", async () => {
   }
 });
 $("btn-edit-device").addEventListener("click", () => openDeviceModal(state.targets.activeId));
+$("btn-reveal-cfg").addEventListener("click", async () => {
+  const msg = await call("reveal_file", { kind: "config" });
+  if (okv(msg)) toast(msg, "ok");
+});
 
 /* ---------- 骨架屏 ----------
    取数期间不要把上一台设备的内容留在屏上：先占位，数据回来由各自的渲染函数整片替换。 */
@@ -866,8 +873,13 @@ function renderConfigOverview() {
   $("i-tc").textContent = hasCfg
     ? `${px.length} 条` + (storeN ? ` · store ${storeN} / 文件 ${px.length - storeN}` : " · 全在配置文件")
     : "未读取到配置";
-  $("i-cfg").textContent =
-    (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "远端（通过 API 读写）");
+  const cfgPath = (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "");
+  $("i-cfg").textContent = cfgPath || "远端（通过 API 读写）";
+  const revealCfg = $("btn-reveal-cfg");
+  revealCfg.disabled = !cfgPath || state.busy;
+  revealCfg.title = cfgPath
+    ? `在 Finder 中定位 ${cfgPath}`
+    : "远端设备的配置文件在它自己的机器上，这里定位不了";
   $("i-saved").textContent = (s && s.savedAt) || "—";
   $("btn-edit-device").disabled = !t || state.busy;
   const edit = $("btn-edit-server");
@@ -1166,11 +1178,13 @@ $("btn-stop").addEventListener("click", async () => {
 
 /* ---------- logs ---------- */
 async function loadLog() {
+  $("btn-reveal-log").classList.toggle("hidden", isRemote());
   if (isRemote()) return;
   const s = state.status || {};
   const base = (p) => (p ? p.split("/").pop() : "");
-  $("log-out").textContent = base(s.logPath) || "frpc.log";
-  $("log-err").textContent = base(s.errPath) || "frpc.err";
+  // 按钮上写中文，具体文件名放 title 里悬停看
+  $("log-out").title = base(s.logPath) || "frpc.log";
+  $("log-err").title = base(s.errPath) || "frpc.err";
   $("log-path").textContent = state.logKind === "stdout" ? s.logPath || "" : s.errPath || "";
   const text = await call("read_log", { kind: state.logKind });
   if (okv(text)) {
@@ -1190,6 +1204,10 @@ $("log-err").addEventListener("click", () => {
   loadLog();
 });
 $("log-refresh").addEventListener("click", loadLog);
+$("btn-reveal-log").addEventListener("click", async () => {
+  const msg = await call("reveal_file", { kind: state.logKind === "stdout" ? "log" : "err" });
+  if (okv(msg)) toast(msg, "ok");
+});
 
 /* ---------- global ---------- */
 $("btn-refresh").addEventListener("click", async () => {

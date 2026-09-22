@@ -247,6 +247,8 @@ body {
 .kv { display: flex; gap: 12px; padding: 4px 0; min-height: 26px; align-items: flex-start; }
 .kv .k { width: 100px; flex: none; color: var(--muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
 .kv .v { flex: 1; min-width: 0; color: var(--text); font-size: 12.5px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 概览行尾的小按钮跟着行高走，不参与 .v 的弹性伸缩 */
+.kv > .btn { flex: none; align-self: center; }
 
 /* ---------- tunnels table ---------- */
 /* Chrome 式目标 tab：激活页与下方内容融为一体，其余被分隔线隔开 */
@@ -497,6 +499,8 @@ body {
 .pgrid .field.wide { grid-column: 1 / -1; }
 /* 输入框下面的一排常用值：点一下就填进上面的框，省去手敲内网地址和端口 */
 .presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; }
+/* 规则说明写在字段下方，不塞进 placeholder —— 输入框窄，提示会被裁掉 */
+.fhint { font-size: 10.5px; line-height: 14px; color: var(--faint); margin-top: 3px; }
 .preset {
   height: 20px; padding: 0 7px; border-radius: 6px;
   border: 1px solid #e2e8f0; background: var(--bg-row);
