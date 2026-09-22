@@ -2,6 +2,9 @@
 name = "frp-client-tauri"
 version = "0.1.0"
 edition = "2021"
+description = "FRP Client - a native desktop GUI for managing local and remote frpc instances"
+authors = ["zhuzhuyule"]
+license = "MIT"
 
 [dependencies]
 tauri = "2"
