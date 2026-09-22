@@ -501,6 +501,21 @@ body {
 .presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; }
 /* 规则说明写在字段下方，不塞进 placeholder —— 输入框窄，提示会被裁掉 */
 .fhint { font-size: 10.5px; line-height: 14px; color: var(--faint); margin-top: 3px; }
+/* 高级设置：默认收起，展开后沿用同一套 .pgrid 栅格 */
+.adv { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.adv > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+}
+.adv > summary::-webkit-details-marker { display: none; }
+.adv > summary::before { content: "▸"; font-size: 9px; color: var(--faint); }
+.adv[open] > summary::before { content: "▾"; }
+.adv .pgrid { margin-top: 10px; }
+.adv-tag {
+  margin-left: auto; background: var(--primary-soft); color: var(--primary-deep);
+  border-radius: 4px; padding: 1px 6px; font-size: 10.5px;
+}
 .preset {
   height: 20px; padding: 0 7px; border-radius: 6px;
   border: 1px solid #e2e8f0; background: var(--bg-row);

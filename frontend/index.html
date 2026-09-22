@@ -172,6 +172,25 @@
       </label>
       <label class="field" title="http 类型才用，多个域名用逗号分隔"><span>域名<i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" /></label>
     </div>
+    <details class="adv" id="proxy-adv">
+      <summary>高级设置<i class="f-key">transport / healthCheck</i><span class="adv-tag hidden" id="proxy-adv-tag">已设置</span></summary>
+      <div class="pgrid">
+        <label class="field" title="transport.useEncryption"><span>链路加密<i class="f-key">useEncryption</i></span>
+          <select id="n-enc"><option value="">默认</option><option value="true">开启</option><option value="false">关闭</option></select>
+        </label>
+        <label class="field" title="transport.useCompression"><span>数据压缩<i class="f-key">useCompression</i></span>
+          <select id="n-comp"><option value="">默认</option><option value="true">开启</option><option value="false">关闭</option></select>
+        </label>
+        <label class="field" title="transport.bandwidthLimit"><span>带宽限制<i class="f-key">bandwidthLimit</i></span><input id="n-bw" placeholder="如 1MB" />
+          <span class="fhint">只认大写 KB / MB，留空为不限</span>
+        </label>
+        <label class="field" title="healthCheck.type"><span>健康检查<i class="f-key">healthCheck</i></span>
+          <select id="n-hc"><option value="">关闭</option><option value="tcp">tcp 探测</option></select>
+        </label>
+        <label class="field" title="healthCheck.intervalSeconds"><span>探测间隔（秒）<i class="f-key">intervalSeconds</i></span><input id="n-hc-int" placeholder="如 10" /></label>
+        <label class="field" title="healthCheck.maxFailed"><span>失败次数<i class="f-key">maxFailed</i></span><input id="n-hc-fail" placeholder="如 3" /></label>
+      </div>
+    </details>
     <div class="hint" id="proxy-hint">加入暂存列表后仍需点右上角的保存按钮写入当前目标</div>
     <div class="modal-foot">
       <button id="btn-add-cancel" class="btn sm">取消</button>

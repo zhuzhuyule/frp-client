@@ -365,6 +365,49 @@ function renderProxyPresets(exceptName) {
   markPresets();
 }
 
+/* ---------- 隧道弹窗：高级区 ----------
+   键名与后端 NewProxyDto 一一对应，留空 = 不写这一项 */
+const ADV_IDS = {
+  encrypt: "n-enc",
+  compress: "n-comp",
+  bandwidth: "n-bw",
+  hcType: "n-hc",
+  hcInterval: "n-hc-int",
+  hcFailed: "n-hc-fail",
+};
+
+function advValues() {
+  const o = {};
+  for (const [k, id] of Object.entries(ADV_IDS)) o[k] = $(id).value.trim();
+  return o;
+}
+
+/* 没选探测方式时把两个数字框清掉并禁掉，否则提交会撞上"填了间隔就要选方式" */
+function syncHc() {
+  const off = !$("n-hc").value;
+  ["n-hc-int", "n-hc-fail"].forEach((id) => {
+    $(id).disabled = off;
+    if (off) $(id).value = "";
+  });
+}
+
+function styleAdv() {
+  // store 表达不了显式 false（frpc 会抹成默认值），这种目标上不给"关闭"
+  ["n-enc", "n-comp"].forEach((id) => {
+    const off = $(id).querySelector('option[value="false"]');
+    off.disabled = !!state.storeMode;
+    off.textContent = state.storeMode ? "关闭（store 不支持）" : "关闭";
+  });
+}
+
+function setAdv(a) {
+  for (const [k, id] of Object.entries(ADV_IDS)) $(id).value = (a && a[k]) || "";
+  syncHc();
+  const on = Object.values(ADV_IDS).some((id) => $(id).value);
+  $("proxy-adv").open = on;
+  $("proxy-adv-tag").classList.toggle("hidden", !on);
+}
+
 /* 当前值正好等于某个常用值时把它标出来，一眼看出填的是不是老地址 */
 function markPresets() {
   document.querySelectorAll(".mask .preset").forEach((c) =>
@@ -1083,6 +1126,8 @@ function openAddProxy() {
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
   renderProxyPresets(null);
+  styleAdv();
+  setAdv(null);
   $("proxy-mask").classList.remove("hidden");
   $("n-name").focus();
 }
@@ -1114,6 +1159,8 @@ function openEditProxy(name) {
   $("n-remote-port").value = c.remotePort || "";
   $("n-domain").value = c.domains || "";
   renderProxyPresets(name);
+  styleAdv();
+  setAdv(c);
   $("proxy-mask").classList.remove("hidden");
   $("n-name").focus();
 }
@@ -1123,6 +1170,7 @@ function closeAddProxy() {
   state.editing = null;
 }
 $("btn-add-cancel").addEventListener("click", closeAddProxy);
+$("n-hc").addEventListener("change", syncHc);
 $("proxy-mask").addEventListener("click", (e) => {
   if (e.target === $("proxy-mask")) closeAddProxy();
 });
@@ -1135,6 +1183,7 @@ $("btn-add").addEventListener("click", async () => {
     localPort: $("n-local-port").value.trim(),
     remotePort: $("n-remote-port").value.trim(),
     domain: $("n-domain").value.trim(),
+    ...advValues(),
   };
   if (!np.name) {
     toast("名称不能为空", "err");

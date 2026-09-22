@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
 // ---------- environment / target discovery ----------
 
@@ -700,6 +700,35 @@ fn store_body(p: &NewProxy) -> String {
     if !domains.is_empty() {
         conf.insert("customDomains".into(), serde_json::json!(domains));
     }
+    // store 侧的 transport / healthCheck 挂在类型对象里面（跟 localIP 同级），
+    // 挂在外层会被 frpc 直接丢掉 —— 实测过。false 也表达不了（omitempty 会抹掉），
+    // 所以前端在 store 模式下不给"关闭"这个选项。
+    if !p.adv.is_empty() {
+        let mut tr = serde_json::Map::new();
+        if p.adv.encrypt == "true" {
+            tr.insert("useEncryption".into(), serde_json::json!(true));
+        }
+        if p.adv.compress == "true" {
+            tr.insert("useCompression".into(), serde_json::json!(true));
+        }
+        if !p.adv.bandwidth.trim().is_empty() {
+            tr.insert("bandwidthLimit".into(), serde_json::json!(p.adv.bandwidth.trim()));
+        }
+        if !tr.is_empty() {
+            conf.insert("transport".into(), serde_json::Value::Object(tr));
+        }
+        if !p.adv.hc_type.trim().is_empty() {
+            let mut hc = serde_json::Map::new();
+            hc.insert("type".into(), serde_json::json!(p.adv.hc_type.trim()));
+            if let Ok(n) = p.adv.hc_interval.trim().parse::<i64>() {
+                hc.insert("intervalSeconds".into(), serde_json::json!(n));
+            }
+            if let Ok(n) = p.adv.hc_failed.trim().parse::<i64>() {
+                hc.insert("maxFailed".into(), serde_json::json!(n));
+            }
+            conf.insert("healthCheck".into(), serde_json::Value::Object(hc));
+        }
+    }
     let mut root = serde_json::Map::new();
     root.insert("name".into(), serde_json::json!(p.name.as_str()));
     root.insert("type".into(), serde_json::json!(p.ptype.as_str()));
@@ -759,6 +788,19 @@ pub fn store_proxies(e: &Endpoint) -> Result<Vec<ProxyCfg>> {
             Some(serde_json::Value::String(s)) => s.clone(),
             _ => String::new(),
         };
+        // 高级项挂在类型对象下的 transport / healthCheck 子对象里；
+        // frpc 总会回显这两个子对象（空值就是没设过）
+        let pick = |tbl: &str, k: &str| -> String {
+            conf.get(tbl)
+                .and_then(|t| t.get(k))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default()
+        };
         out.push(ProxyCfg {
             name: field_str(&item, "name"),
             ptype,
@@ -766,6 +808,14 @@ pub fn store_proxies(e: &Endpoint) -> Result<Vec<ProxyCfg>> {
             local_port: num("localPort"),
             remote_port: num("remotePort"),
             domains,
+            adv: ProxyAdv {
+                encrypt: pick("transport", "useEncryption"),
+                compress: pick("transport", "useCompression"),
+                bandwidth: pick("transport", "bandwidthLimit"),
+                hc_type: pick("healthCheck", "type"),
+                hc_interval: adv_num(&pick("healthCheck", "intervalSeconds")),
+                hc_failed: adv_num(&pick("healthCheck", "maxFailed")),
+            },
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1207,6 +1257,45 @@ pub fn restore_config_from_backup(t: &Target, bak: &Path) -> Result<String> {
 
 // ---------- structured TOML editing (comment preserving) ----------
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProxyAdv {
+    /// "" | "true" | "false"
+    pub encrypt: String,
+    pub compress: String,
+    /// frpc 只认 KB / MB 两种单位的字符串，如 "1MB"
+    pub bandwidth: String,
+    /// "" | "tcp"
+    pub hc_type: String,
+    pub hc_interval: String,
+    pub hc_failed: String,
+}
+
+impl ProxyAdv {
+    fn is_empty(&self) -> bool {
+        [
+            &self.encrypt,
+            &self.compress,
+            &self.bandwidth,
+            &self.hc_type,
+            &self.hc_interval,
+            &self.hc_failed,
+        ]
+        .into_iter()
+        .all(|v| v.trim().is_empty())
+    }
+}
+
+/// frpc 会把没设过的健康检查回显成 `intervalSeconds = 0`，0 一律按"没设过"读，
+/// 否则编辑一条无关隧道时会把 0 当成用户填的值写回去
+fn adv_num(raw: &str) -> String {
+    let t = raw.trim();
+    if t == "0" {
+        String::new()
+    } else {
+        t.to_string()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProxyCfg {
     pub name: String,
@@ -1215,6 +1304,7 @@ pub struct ProxyCfg {
     pub local_port: String,
     pub remote_port: String,
     pub domains: String,
+    pub adv: ProxyAdv,
 }
 
 impl ProxyCfg {
@@ -1239,6 +1329,7 @@ impl ProxyCfg {
             } else {
                 Some(self.domains.clone())
             },
+            adv: self.adv.clone(),
         })
     }
 }
@@ -1253,6 +1344,32 @@ pub struct Basics {
     pub web_pass: String,
 }
 
+/// 读 `[proxies.transport]` / `[proxies.healthCheck]`（子表写法和点号写法都走同一棵树）。
+/// 键不存在时留空串，代表"这条隧道没设过这一项"。
+fn read_adv(tbl: &Table) -> ProxyAdv {
+    let sub = |key: &str| -> Option<&dyn TableLike> { tbl.get(key).and_then(|it| it.as_table_like()) };
+    let v = |t: Option<&dyn TableLike>, k: &str| -> String {
+        t.and_then(|t| t.get(k))
+            .and_then(|it| it.as_value())
+            .map(|v| match v {
+                Value::String(s) => s.value().clone(),
+                Value::Integer(i) => i.value().to_string(),
+                Value::Boolean(b) => b.value().to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    };
+    let (tr, hc) = (sub("transport"), sub("healthCheck"));
+    ProxyAdv {
+        encrypt: v(tr, "useEncryption"),
+        compress: v(tr, "useCompression"),
+        bandwidth: v(tr, "bandwidthLimit"),
+        hc_type: v(hc, "type"),
+        hc_interval: adv_num(&v(hc, "intervalSeconds")),
+        hc_failed: adv_num(&v(hc, "maxFailed")),
+    }
+}
+
 pub fn parse_proxies(src: &str) -> Result<Vec<ProxyCfg>> {
     let doc = src.parse::<DocumentMut>()?;
     let mut out = Vec::new();
@@ -1262,7 +1379,7 @@ pub fn parse_proxies(src: &str) -> Result<Vec<ProxyCfg>> {
                 tbl.get(k).and_then(|it| it.as_value()).map(|v| match v {
                     Value::String(s) => s.value().clone(),
                     Value::Integer(i) => i.value().to_string(),
-                    Value::Boolean(b) => b.to_string(),
+                    Value::Boolean(b) => b.value().to_string(),
                     _ => String::new(),
                 }).unwrap_or_default()
             };
@@ -1277,19 +1394,21 @@ pub fn parse_proxies(src: &str) -> Result<Vec<ProxyCfg>> {
                         .join(",")
                 })
                 .unwrap_or_default();
+            let local_ip = {
+                    let ip = scalar("localIP");
+                    if ip.is_empty() { "127.0.0.1".into() } else { ip }
+                };
             out.push(ProxyCfg {
                 name: scalar("name"),
                 ptype: {
                     let t = scalar("type");
                     if t.is_empty() { "tcp".into() } else { t }
                 },
-                local_ip: {
-                    let ip = scalar("localIP");
-                    if ip.is_empty() { "127.0.0.1".into() } else { ip }
-                },
+                local_ip,
                 local_port: scalar("localPort"),
                 remote_port: scalar("remotePort"),
                 domains,
+                adv: read_adv(tbl),
             });
         }
     }
@@ -1386,6 +1505,7 @@ pub struct NewProxy {
     pub local_port: i64,
     pub remote_port: Option<i64>,
     pub domain: Option<String>,
+    pub adv: ProxyAdv,
 }
 
 pub fn validate_new(p: &NewProxy, existing: &[String]) -> Result<()> {
@@ -1412,7 +1532,53 @@ pub fn validate_new(p: &NewProxy, existing: &[String]) -> Result<()> {
         }
         other => bail!("不支持的隧道类型 {other}"),
     }
+    validate_adv(&p.adv)?;
     Ok(())
+}
+
+/// 高级项单独校验：这些字段留空就等于不写，所以只校验"写了就得对"
+fn validate_adv(a: &ProxyAdv) -> Result<()> {
+    for (k, v) in [("useEncryption", &a.encrypt), ("useCompression", &a.compress)] {
+        let t = v.trim();
+        if !t.is_empty() && t != "true" && t != "false" {
+            bail!("{k} 只能是 开启 / 关闭");
+        }
+    }
+    let bw = a.bandwidth.trim();
+    if !bw.is_empty() && !bandwidth_ok(bw) {
+        bail!("带宽限制格式不对：{bw}（只支持 KB / MB，如 1MB、500KB）");
+    }
+    let hc_on = !a.hc_type.trim().is_empty();
+    for (k, v) in [("健康检查间隔", &a.hc_interval), ("健康检查失败次数", &a.hc_failed)] {
+        let t = v.trim();
+        if t.is_empty() {
+            if hc_on {
+                bail!("{k} 不能为空");
+            }
+            continue;
+        }
+        let n: i64 = t.parse().map_err(|_| anyhow!("{k} 必须是整数"))?;
+        if n <= 0 {
+            bail!("{k} 必须大于 0");
+        }
+    }
+    if !hc_on && (!a.hc_interval.trim().is_empty() || !a.hc_failed.trim().is_empty()) {
+        bail!("填了间隔或次数，就要选健康检查方式");
+    }
+    Ok(())
+}
+
+/// frpc 0.71 实测：只有大写 KB / MB 两种单位，数字可带小数；"1M"、"1mb"、"1GB" 一律被拒
+pub fn bandwidth_ok(s: &str) -> bool {
+    let num = match s.trim().strip_suffix("KB").or_else(|| s.trim().strip_suffix("MB")) {
+        Some(n) => n,
+        None => return false,
+    };
+    !num.is_empty()
+        && num != "."
+        && !num.starts_with('.')
+        && num.chars().filter(|c| *c == '.').count() <= 1
+        && num.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// 域名输入允许逗号 / 空格分隔多个
@@ -1435,6 +1601,82 @@ fn set_domains(tbl: &mut Table, domains: &[String]) {
     tbl["customDomains"] = Item::Value(Value::Array(arr));
 }
 
+/// 写高级项。空值一律当作"这一项不要了"，整组都空时连子表一起删掉，
+/// 所以没碰过高级区的配置文件保存后逐字节不变。
+/// 只动我们认识的这几个键：别人手写的 transport/healthCheck 子键原样留着。
+fn set_adv(tbl: &mut Table, a: &ProxyAdv) {
+    let boolean = |s: &str| -> Option<Item> {
+        match s.trim() {
+            "true" => Some(value(true)),
+            "false" => Some(value(false)),
+            _ => None,
+        }
+    };
+    let text = |s: &str| -> Option<Item> {
+        let s = s.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(value(s))
+        }
+    };
+    let number = |s: &str| -> Option<Item> {
+        s.trim().parse::<i64>().ok().map(value)
+    };
+    set_sub_adv(
+        tbl,
+        "transport",
+        &[
+            ("useEncryption", boolean(&a.encrypt)),
+            ("useCompression", boolean(&a.compress)),
+            ("bandwidthLimit", text(&a.bandwidth)),
+        ],
+    );
+    set_sub_adv(
+        tbl,
+        "healthCheck",
+        &[
+            ("type", text(&a.hc_type)),
+            ("intervalSeconds", number(&a.hc_interval)),
+            ("maxFailed", number(&a.hc_failed)),
+        ],
+    );
+}
+
+fn set_sub_adv(tbl: &mut Table, key: &str, vals: &[(&str, Option<Item>)]) {
+    if !tbl.contains_key(key) {
+        if vals.iter().all(|(_, v)| v.is_none()) {
+            return;
+        }
+        // 点号写法（transport.useEncryption = true）：跟隧道自己的键挨在一起，
+        // 不像子表那样会在 [[proxies]] 之间插一段
+        let mut t = Table::new();
+        t.set_dotted(true);
+        tbl[key] = Item::Table(t);
+    }
+    let sub_empty = {
+        let sub = match tbl.get_mut(key).and_then(|it| it.as_table_like_mut()) {
+            Some(t) => t,
+            // 被写成了标量或数组，不是表；不猜意图，原样留着
+            None => return,
+        };
+        for (k, v) in vals {
+            match v {
+                Some(v) => {
+                    sub.insert(k, v.clone());
+                }
+                None => {
+                    sub.remove(k);
+                }
+            }
+        }
+        sub.is_empty()
+    };
+    if sub_empty {
+        tbl.remove(key);
+    }
+}
+
 pub fn add_proxy(src: &str, p: &NewProxy) -> Result<String> {
     let mut doc = src.parse::<DocumentMut>()?;
     let mut tbl = Table::new();
@@ -1447,6 +1689,7 @@ pub fn add_proxy(src: &str, p: &NewProxy) -> Result<String> {
         tbl["remotePort"] = value(rp);
     }
     set_domains(&mut tbl, &domain_list(p.domain.as_deref().unwrap_or("")));
+    set_adv(&mut tbl, &p.adv);
     proxies_aot(&mut doc).push(tbl);
     Ok(doc.to_string())
 }
@@ -1478,6 +1721,7 @@ pub fn update_proxy(src: &str, original: &str, p: &NewProxy) -> Result<String> {
         }
     }
     set_domains(tbl, &domain_list(p.domain.as_deref().unwrap_or("")));
+    set_adv(tbl, &p.adv);
     Ok(doc.to_string())
 }
 
@@ -1593,6 +1837,7 @@ remotePort = 2222
             local_port: 8080,
             remote_port: Some(9090),
             domain: None,
+            adv: Default::default(),
         };
         let out = add_proxy(SAMPLE, &np).unwrap();
         let ps = parse_proxies(&out).unwrap();
@@ -1612,6 +1857,7 @@ remotePort = 2222
             local_port: 9092,
             remote_port: Some(19092),
             domain: None,
+            adv: Default::default(),
         };
         let out = update_proxy(SAMPLE, "web", &np).unwrap();
         out.parse::<DocumentMut>().unwrap();
@@ -1635,6 +1881,7 @@ remotePort = 2222
             local_port: 80,
             remote_port: Some(8080),
             domain: None,
+            adv: Default::default(),
         };
         assert!(validate_new(&base, &[]).is_ok());
         assert!(validate_new(&base, &["n".into()]).is_err());
@@ -1661,6 +1908,215 @@ remotePort = 2222
         assert!(validate_new(&NewProxy { ptype: "smtp".into(), ..base.clone() }, &[]).is_err());
     }
 
+    /// 点号写法（frpc 自己生成的配置长这样）
+    const ADV_DOT: &str = r#"serverAddr = "1.2.3.4"
+serverPort = 7000
+
+[[proxies]]
+name = "web"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 9092
+remotePort = 19092
+transport.useEncryption = true
+transport.bandwidthLimit = "1MB"
+healthCheck.type = "tcp"
+healthCheck.intervalSeconds = 10
+healthCheck.maxFailed = 3
+"#;
+
+    /// 子表写法，语义与上面完全一致
+    const ADV_SUB: &str = r#"serverAddr = "1.2.3.4"
+serverPort = 7000
+
+[[proxies]]
+name = "web"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 9092
+remotePort = 19092
+
+[proxies.transport]
+useEncryption = true
+bandwidthLimit = "1MB"
+
+[proxies.healthCheck]
+type = "tcp"
+intervalSeconds = 10
+maxFailed = 3
+"#;
+
+    #[test]
+    fn parses_advanced_either_style() {
+        let want = ProxyAdv {
+            encrypt: "true".into(),
+            bandwidth: "1MB".into(),
+            hc_type: "tcp".into(),
+            hc_interval: "10".into(),
+            hc_failed: "3".into(),
+            ..Default::default()
+        };
+        for src in [ADV_DOT, ADV_SUB] {
+            assert_eq!(parse_proxies(src).unwrap()[0].adv, want);
+        }
+        assert_eq!(parse_proxies(SAMPLE).unwrap()[0].adv, ProxyAdv::default());
+        // frpc 会把没设过的探测回显成 0，读回来必须是空
+        let zeros = ADV_DOT.replace(
+            "healthCheck.type = \"tcp\"\nhealthCheck.intervalSeconds = 10\nhealthCheck.maxFailed = 3",
+            "healthCheck.intervalSeconds = 0",
+        );
+        assert_eq!(
+            parse_proxies(&zeros).unwrap()[0].adv,
+            ProxyAdv {
+                encrypt: "true".into(),
+                bandwidth: "1MB".into(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn writes_advanced_as_dotted_keys() {
+        let np = NewProxy {
+            name: "web".into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 9092,
+            remote_port: Some(19092),
+            domain: None,
+            adv: ProxyAdv {
+                encrypt: "true".into(),
+                compress: "false".into(),
+                bandwidth: "500KB".into(),
+                hc_type: "tcp".into(),
+                hc_interval: "10".into(),
+                hc_failed: "3".into(),
+            },
+        };
+        let out = update_proxy(SAMPLE, "web", &np).unwrap();
+        out.parse::<DocumentMut>().expect("写出来的必须是合法 TOML");
+        assert!(out.contains("transport.useEncryption = true"), "{out}");
+        assert!(out.contains("transport.useCompression = false"), "{out}");
+        assert!(out.contains("transport.bandwidthLimit = \"500KB\""), "{out}");
+        assert!(out.contains("healthCheck.intervalSeconds = 10"), "{out}");
+        assert_eq!(parse_proxies(&out).unwrap()[0].adv, np.adv);
+        // 清空后应当与"从没设过"完全一样
+        let cleared =
+            update_proxy(&out, "web", &NewProxy { adv: Default::default(), ..np.clone() }).unwrap();
+        let never =
+            update_proxy(SAMPLE, "web", &NewProxy { adv: Default::default(), ..np }).unwrap();
+        assert_eq!(cleared, never);
+    }
+
+    #[test]
+    fn keeps_unknown_transport_keys() {
+        // transport 里别人手写的键我们不认识，但也不该丢
+        let src = SAMPLE.replace(
+            "customDomains = [\"a.example.com\"]",
+            "customDomains = [\"a.example.com\"]\ntransport.proxyProtocol = \"v2\"",
+        );
+        let np = NewProxy {
+            name: "web".into(),
+            ptype: "http".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 9092,
+            remote_port: None,
+            domain: Some("a.example.com".into()),
+            adv: ProxyAdv {
+                bandwidth: "1MB".into(),
+                ..Default::default()
+            },
+        };
+        let out = update_proxy(&src, "web", &np).unwrap();
+        assert!(out.contains("transport.proxyProtocol"), "{out}");
+        assert!(out.contains("transport.bandwidthLimit"), "{out}");
+    }
+
+    #[test]
+    fn bandwidth_units_only_kb_mb() {
+        // 单位必须是大写 KB / MB，这条是拿 frpc verify 实测出来的
+        for ok in ["1MB", "10KB", "0.5MB", "1024KB"] {
+            assert!(bandwidth_ok(ok), "{ok} 应当合法");
+        }
+        for bad in ["1M", "1", "1mb", "1GB", "1MiB", "1B", "1 MB/s", "MB", "1.2.3MB", "1052304"] {
+            assert!(!bandwidth_ok(bad), "{bad} 不该通过");
+        }
+    }
+
+    #[test]
+    fn validates_advanced_fields() {
+        let base = NewProxy {
+            name: "n".into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 80,
+            remote_port: Some(8080),
+            domain: None,
+            adv: Default::default(),
+        };
+        let a = |adv: ProxyAdv| validate_new(&NewProxy { adv, ..base.clone() }, &[]);
+        assert!(a(ProxyAdv::default()).is_ok());
+        assert!(a(ProxyAdv { encrypt: "yes".into(), ..Default::default() }).is_err());
+        assert!(a(ProxyAdv { bandwidth: "1M".into(), ..Default::default() }).is_err());
+        assert!(a(ProxyAdv { bandwidth: "1MB".into(), ..Default::default() }).is_ok());
+        // 选了探测方式就得给间隔和次数
+        assert!(a(ProxyAdv { hc_type: "tcp".into(), ..Default::default() }).is_err());
+        assert!(a(ProxyAdv {
+            hc_type: "tcp".into(),
+            hc_interval: "10".into(),
+            ..Default::default()
+        })
+        .is_err());
+        // 反过来只填数字不选方式也不行
+        assert!(a(ProxyAdv { hc_interval: "10".into(), ..Default::default() }).is_err());
+        assert!(a(ProxyAdv {
+            hc_type: "tcp".into(),
+            hc_interval: "10".into(),
+            hc_failed: "3".into(),
+            ..Default::default()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn store_body_nests_advanced_under_type_block() {
+        let p = NewProxy {
+            name: "web".into(),
+            ptype: "tcp".into(),
+            local_ip: "127.0.0.1".into(),
+            local_port: 9092,
+            remote_port: Some(19092),
+            domain: None,
+            adv: ProxyAdv {
+                encrypt: "true".into(),
+                bandwidth: "1MB".into(),
+                hc_type: "tcp".into(),
+                hc_interval: "10".into(),
+                hc_failed: "3".into(),
+                ..Default::default()
+            },
+        };
+        let v: serde_json::Value = serde_json::from_str(&store_body(&p)).unwrap();
+        // 挂在类型块里；挂在外层会被 frpc 丢掉（沙箱实测）
+        assert_eq!(v["tcp"]["transport"]["useEncryption"], true);
+        assert_eq!(v["tcp"]["transport"]["bandwidthLimit"], "1MB");
+        assert_eq!(v["tcp"]["healthCheck"]["intervalSeconds"], 10);
+        assert_eq!(v["tcp"]["healthCheck"]["maxFailed"], 3);
+        // 没设过时不写这两块，旧配置的请求体保持原样
+        let plain: serde_json::Value =
+            serde_json::from_str(&store_body(&NewProxy { adv: Default::default(), ..p.clone() }))
+                .unwrap();
+        assert!(plain["tcp"].get("transport").is_none());
+        assert!(plain["tcp"].get("healthCheck").is_none());
+        // store 表达不了显式 false（frpc 会抹掉），所以整块都不写
+        let off: serde_json::Value = serde_json::from_str(&store_body(&NewProxy {
+            adv: ProxyAdv { encrypt: "false".into(), ..Default::default() },
+            ..p
+        }))
+        .unwrap();
+        assert!(off["tcp"].get("transport").is_none());
+    }
+
     #[test]
     fn store_body_matches_measured_contract() {
         let p = NewProxy {
@@ -1670,6 +2126,7 @@ remotePort = 2222
             local_port: 8080,
             remote_port: None,
             domain: Some("a.example.com, b.example.com".into()),
+            adv: Default::default(),
         };
         let v: serde_json::Value = serde_json::from_str(&store_body(&p)).unwrap();
         assert_eq!(v["name"], "web");
@@ -1698,6 +2155,7 @@ remotePort = 2222
             local_port: "8080".into(),
             remote_port: String::new(),
             domains: "a.example.com".into(),
+            adv: Default::default(),
         };
         let p = cfg.to_new_proxy().unwrap();
         assert_eq!((p.local_port, p.remote_port), (8080, None));
@@ -1928,6 +2386,7 @@ remotePort = 2222
             local_port: 8001,
             remote_port: Some(18011),
             domain: None,
+            adv: Default::default(),
         };
         store_add(&e, &np).unwrap();
         let got = store_proxies(&e)

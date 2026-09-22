@@ -10,7 +10,7 @@ use backend::{
     remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
     save_remotes, start, stop, store_add, store_delete, store_proxies, store_replace,
     store_update, tail, validate_host, version_at_least, wait_ready,
-    Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyCfg, RemoteTarget,
+    Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyAdv, ProxyCfg, RemoteTarget,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -66,6 +66,18 @@ struct NewProxyDto {
     local_port: String,
     remote_port: String,
     domain: String,
+    #[serde(default)]
+    encrypt: String,
+    #[serde(default)]
+    compress: String,
+    #[serde(default)]
+    bandwidth: String,
+    #[serde(default)]
+    hc_type: String,
+    #[serde(default)]
+    hc_interval: String,
+    #[serde(default)]
+    hc_failed: String,
 }
 
 impl NewProxyDto {
@@ -97,6 +109,14 @@ impl NewProxyDto {
             local_port,
             remote_port,
             domain,
+            adv: ProxyAdv {
+                encrypt: self.encrypt.trim().to_string(),
+                compress: self.compress.trim().to_string(),
+                bandwidth: self.bandwidth.trim().to_string(),
+                hc_type: self.hc_type.trim().to_string(),
+                hc_interval: self.hc_interval.trim().to_string(),
+                hc_failed: self.hc_failed.trim().to_string(),
+            },
         })
     }
 }
@@ -800,6 +820,9 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                 "name": c.name, "ptype": c.ptype, "localIp": c.local_ip,
                 "localPort": c.local_port, "remotePort": c.remote_port,
                 "domains": c.domains, "source": source,
+                "encrypt": c.adv.encrypt, "compress": c.adv.compress,
+                "bandwidth": c.adv.bandwidth, "hcType": c.adv.hc_type,
+                "hcInterval": c.adv.hc_interval, "hcFailed": c.adv.hc_failed,
             })
         })
         .collect();
@@ -1147,6 +1170,7 @@ mod tests {
             local_port: "8080".into(),
             remote_port: port.into(),
             domains: String::new(),
+            adv: Default::default(),
         }
     }
 
