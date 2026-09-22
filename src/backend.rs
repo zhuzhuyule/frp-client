@@ -444,7 +444,33 @@ pub fn load_ai_default() -> String {
         .unwrap_or_default()
 }
 
-/// 整体替换 [[aiModel]] 与 [ai]（只剩 default 一个键），其它表原样保留
+/// 首次启动预置的免费网关（Agnes 全局免费，但要用户自己领 Key 填上）
+pub fn ai_seed() -> AiProfile {
+    AiProfile {
+        name: "Agnes".into(),
+        base_url: "https://llm.ause.cc/openai/v1".into(),
+        model: "agnes-3.0-flash".into(),
+        api_key: String::new(),
+    }
+}
+
+/// 用户是否动过 AI 配置（播种过一次或保存过都算）——删光后不再重复播种
+pub fn ai_seeded() -> bool {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return false;
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return false;
+    };
+    doc.get("ai")
+        .and_then(|it| it.as_table())
+        .and_then(|t| t.get("seeded"))
+        .and_then(|it| it.as_value())
+        .and_then(|v| v.as_bool())
+        == Some(true)
+}
+
+/// 整体替换 [[aiModel]] 与 [ai]（default + seeded 两个键），其它表原样保留
 pub fn save_ai_profiles(list: &[AiProfile], default: &str) -> Result<()> {
     let path = app_config_path();
     if let Some(dir) = path.parent() {
@@ -457,7 +483,9 @@ pub fn save_ai_profiles(list: &[AiProfile], default: &str) -> Result<()> {
     };
     if list.is_empty() && default.is_empty() {
         doc.remove("aiModel");
-        doc.remove("ai");
+        let mut t = Table::new();
+        t["seeded"] = value(true);
+        doc["ai"] = Item::Table(t);
     } else {
         let mut aot = ArrayOfTables::new();
         for p in list {
@@ -474,6 +502,7 @@ pub fn save_ai_profiles(list: &[AiProfile], default: &str) -> Result<()> {
         if !default.is_empty() {
             t["default"] = value(default);
         }
+        t["seeded"] = value(true);
         doc["ai"] = Item::Table(t);
     }
     write_app_doc(&doc)
@@ -2868,7 +2897,7 @@ maxFailed = 3
         assert_eq!(load_ai_profiles().unwrap(), profiles);
         assert_eq!(load_ai_default(), "DeepSeek");
         assert_eq!(load_locals(), ls); // aiModel 写入不冲掉 [[local]]
-        // 空列表 + 空默认 → 删掉整节
+        // 空列表 + 空默认 → 清掉 [[aiModel]]，[ai] 只留 seeded 标记
         save_ai_profiles(&[], "").unwrap();
         assert!(load_ai_profiles().unwrap().is_empty());
         assert_eq!(load_ai_default(), "");
@@ -2887,6 +2916,14 @@ maxFailed = 3
             api_key: "sk-old".into(),
         });
         assert_eq!(load_ai_default(), "");
+        // 播种契约：legacy [ai] 没有 seeded → 视为没动过；保存一次永久打标，删光也不重复播种
+        assert!(!ai_seeded());
+        save_ai_profiles(&[ai_seed()], "Agnes").unwrap();
+        assert!(ai_seeded());
+        assert_eq!(load_ai_profiles().unwrap()[0], ai_seed());
+        save_ai_profiles(&[], "").unwrap();
+        assert!(ai_seeded());
+        assert!(load_ai_profiles().unwrap().is_empty());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

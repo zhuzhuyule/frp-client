@@ -1115,7 +1115,12 @@ async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String,
 
 #[tauri::command]
 async fn get_ai_cfg() -> Result<serde_json::Value, String> {
-    let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    let mut profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
+    // 从没动过 AI 配置时预置一条免费的 Agnes 网关（Key 留空，用户自己领了填）
+    if profiles.is_empty() && !backend::ai_seeded() {
+        profiles = vec![backend::ai_seed()];
+        let _ = backend::save_ai_profiles(&profiles, "Agnes");
+    }
     let default = backend::load_ai_default();
     // key 永远不出后端，前端只拿 hasKey 决定占位文案
     Ok(serde_json::json!({

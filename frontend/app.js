@@ -1323,6 +1323,7 @@ $("btn-reveal-log").addEventListener("click", async () => {
 /* ---------- AI 编排 ---------- */
 /* 常用 OpenAI 兼容服务：点 chip 填 base_url + 一个能用的模型名，仍可手改 */
 const AI_PROVIDERS = [
+  ["Agnes 免费", "https://llm.ause.cc/openai/v1", "agnes-3.0-flash"],
   ["OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"],
   ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"],
   ["Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"],
