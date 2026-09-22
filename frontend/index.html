@@ -196,9 +196,11 @@
       </label>
       <label class="field"><span>映射端口<i class="f-key">remotePort</i></span><input id="n-remote-port" placeholder="如 9090" />
         <span class="presets" id="n-remote-port-presets"></span>
-        <span class="fhint">tcp / udp 必填，http 可留空</span>
+        <span class="fhint" id="n-remote-hint"></span>
       </label>
-      <label class="field" title="http 类型才用，多个域名用逗号分隔"><span>域名<i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" /></label>
+      <label class="field"><span>域名<i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" />
+        <span class="fhint" id="n-domain-hint"></span>
+      </label>
     </div>
     <details class="adv" id="proxy-adv">
       <summary>高级设置<i class="f-key">transport / healthCheck</i><span class="adv-tag hidden" id="proxy-adv-tag">已设置</span></summary>

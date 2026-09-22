@@ -550,6 +550,8 @@ body {
 .presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; }
 /* 规则说明写在字段下方，不塞进 placeholder —— 输入框窄，提示会被裁掉 */
 .fhint { font-size: 10.5px; line-height: 14px; color: var(--faint); margin-top: 3px; }
+/* 该类型下这个字段是必填项时说明变琥珀色 */
+.fhint.req { color: var(--warn); }
 /* 高级设置：默认收起，展开后沿用同一套 .pgrid 栅格 */
 .adv { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
 .adv > summary {
@@ -558,11 +560,18 @@ body {
   font-size: 12px; color: var(--muted);
 }
 .adv > summary::-webkit-details-marker { display: none; }
-.adv > summary::before { content: "▸"; font-size: 9px; color: var(--faint); }
-.adv[open] > summary::before { content: "▾"; }
+/* 下拉箭头放行尾，展开转 180°，一眼能看出这里能点开 */
+.adv > summary::after {
+  content: ""; flex: none; width: 6px; height: 6px; margin-left: auto;
+  border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted);
+  transform: rotate(45deg); transition: transform .15s ease;
+}
+.adv[open] > summary::after { transform: rotate(-135deg); }
+.adv > summary:hover { color: var(--primary); }
+.adv > summary:hover::after { border-color: var(--primary); }
 .adv .pgrid { margin-top: 10px; }
 .adv-tag {
-  margin-left: auto; background: var(--primary-soft); color: var(--primary-deep);
+  background: var(--primary-soft); color: var(--primary-deep);
   border-radius: 4px; padding: 1px 6px; font-size: 10.5px;
 }
 .preset {

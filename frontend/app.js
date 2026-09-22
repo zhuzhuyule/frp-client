@@ -1111,6 +1111,20 @@ document.querySelectorAll(".eye").forEach((btn) =>
 );
 
 /* ---------- 隧道弹窗 ---------- */
+/* 映射端口/域名两个字段跟着类型走：选完类型就知道该不该填，不用背规则 */
+function syncProxyTypeHints(clearRemote) {
+  const http = $("n-type").value === "http";
+  const rh = $("n-remote-hint");
+  rh.textContent = http ? "http 走域名访问，一般留空；需要固定端口也可以填" : "必填 · frps 对外暴露的端口";
+  rh.classList.toggle("req", !http);
+  $("n-remote-port").placeholder = http ? "可留空" : "必填，如 9090";
+  const dh = $("n-domain-hint");
+  dh.textContent = http ? "必填 · 访问入口，多个用逗号分隔" : "可留空 · tcp 仅作域名记录，frps 不按域名路由";
+  dh.classList.toggle("req", http);
+  if (clearRemote && http) $("n-remote-port").value = "";
+}
+$("n-type").addEventListener("change", () => syncProxyTypeHints(true));
+
 function openAddProxy() {
   state.editing = null;
   $("proxy-title").textContent = "新建隧道";
@@ -1122,6 +1136,7 @@ function openAddProxy() {
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
   renderProxyPresets(null);
+  syncProxyTypeHints(false);
   styleAdv();
   setAdv(null);
   $("proxy-mask").classList.remove("hidden");
@@ -1155,6 +1170,7 @@ function openEditProxy(name) {
   $("n-remote-port").value = c.remotePort || "";
   $("n-domain").value = c.domains || "";
   renderProxyPresets(name);
+  syncProxyTypeHints(false);
   styleAdv();
   setAdv(c);
   $("proxy-mask").classList.remove("hidden");
@@ -1416,10 +1432,11 @@ function renderAiDrafts() {
       (d, i) => {
         const tc = typeCls(d.ptype);
         const local = `${d.localIp || "127.0.0.1"}:${d.localPort || "?"}`;
-        // http 走 frps 的虚拟主端口（一般 80），展示成「FRP 地址:端口」而不是域名占位
+        // http 走 frps 虚拟主端口（一般 80）；tcp/udp 用 real remotePort，缺了标"待补"
         const port = d.ptype === "http" ? (d.remotePort || "80") : d.remotePort;
         const addr = `${frps}:${port || "待补"}`;
-        const rSub = d.ptype === "http" && d.domain ? d.domain : (d.reason || "");
+        // 第二行优先印域名（tcp 也可能带域名记录），没有才轮到生成理由
+        const rSub = d.domain || (d.reason || "");
         const badge = d.st === "ok"
           ? '<span class="badge run">● 已应用</span>'
           : d.st === "err"
@@ -1468,6 +1485,7 @@ function openEditDraft(i) {
   $("n-remote-port").value = d.remotePort || "";
   $("n-domain").value = d.domain || "";
   renderProxyPresets(null);
+  syncProxyTypeHints(false);
   styleAdv();
   setAdv(d);
   $("proxy-mask").classList.remove("hidden");

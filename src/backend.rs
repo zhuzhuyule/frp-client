@@ -659,14 +659,14 @@ pub fn ai_generate(cfg: &AiProfile, prompt: &str, context: &str) -> Result<Vec<A
         "你是 frpc（fatedier/frp）隧道编排助手，只支持三种隧道类型：tcp、udp、http。\n\
          规则：\n\
          - 用户提到的每个细节（本地端口、远程端口、域名、本机地址）都必须体现在草案里，禁止丢弃；不确定的写进 reason 提醒，不要沉默省略。\n\
-         - 「把 A 端口开放/映射到 B 端口」是端口映射：type=tcp（只有用户明确说 udp 时才用 udp），localPort=A，remotePort=B。这类条目必须有 remotePort，不要因为用户顺带提了域名就把它改成 http。\n\
+         - 「把 A 端口开放/映射到 B 端口」是一条 tcp 隧道：type=tcp（只有用户明确说 udp 时才用 udp），localPort=A，remotePort=B。即使用户顺带提了域名，也仍然是这条 tcp，不要改成 http、也不要拆成两条。\n\
+         - 端口映射和域名同时出现时：域名写进这条 tcp 的 domains（customDomains），并在 reason 里提醒：「tcp 通过 FRP 地址:端口访问，域名已记录在案；如需真正的域名访问请另建一条 http 隧道」。\n\
          - 仅当用户只给了访问域名、没有要求远程端口映射，或明确说「用 http / 走域名访问」时才生成 http：type=http，domains 填域名（多个用逗号分隔），remotePort 留空（http 靠域名访问，不用远程端口）。\n\
-         - 端口映射和域名同时出现时只生成那一条 tcp，并把域名写进 reason，例如：「用户还提到域名 x.com；tcp 隧道无法绑域名，如需域名访问请再单独新建一条 http 隧道指向同一本地端口」。\n\
          - 没有域名的 tcp/udp 必须给出 remotePort（frps 上暴露的端口）。\n\
          - name 用小写字母/数字/短横线；端口是 1-65535 的整数；不能与现有隧道重名或撞远程端口。\n\
          - 不要虚构用户没提到的隧道。\n\
          - 只输出一个 JSON 对象，不要任何解释文字或 markdown 代码块，形如：\n\
-           {{\"tunnels\":[{{\"name\":\"web-18080\",\"type\":\"tcp\",\"localIp\":\"127.0.0.1\",\"localPort\":\"8080\",\"remotePort\":\"18080\",\"domains\":\"\",\"reason\":\"端口映射 8080→18080；用户还提到域名 demo.example.com，tcp 隧道无法绑域名，如需域名访问请另建一条 http 隧道\"}},{{\"name\":\"app-3000\",\"type\":\"http\",\"localIp\":\"127.0.0.1\",\"localPort\":\"3000\",\"remotePort\":\"\",\"domains\":\"app.example.com\",\"reason\":\"只用域名访问，未要求远程端口\"}}]}}\n\
+           {{\"tunnels\":[{{\"name\":\"web-18080\",\"type\":\"tcp\",\"localIp\":\"127.0.0.1\",\"localPort\":\"8080\",\"remotePort\":\"18080\",\"domains\":\"demo.example.com\",\"reason\":\"端口映射 8080→18080；tcp 通过 FRP 地址:端口访问，域名已记录在案，如需真正的域名访问请另建一条 http 隧道\"}},{{\"name\":\"app-3000\",\"type\":\"http\",\"localIp\":\"127.0.0.1\",\"localPort\":\"3000\",\"remotePort\":\"\",\"domains\":\"app.example.com\",\"reason\":\"只用域名访问，未要求远程端口\"}}]}}\n\
          现状：\n{context}"
     );
     let body = serde_json::json!({
