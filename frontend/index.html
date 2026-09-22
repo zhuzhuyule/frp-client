@@ -116,18 +116,18 @@
 
     <!-- ============ AI 编排 ============ -->
     <section id="page-ai" class="page col">
+      <div class="card ai-sec">
+        <div class="ai-sec-h">
+          <span class="ai-sec-t">模型配置</span>
+          <span class="hint">全局配置 · 对所有设备生效，点选一个用于生成（OpenAI 兼容 /chat/completions）</span>
+          <span class="flex1"></span>
+          <button id="btn-ai-add" class="btn sm">+ 添加模型配置</button>
+        </div>
+        <div id="ai-profiles" class="ai-profiles"></div>
+      </div>
       <div class="tt-wrap">
         <div id="atabs" class="ttabs"></div>
         <div class="card ai-panel">
-          <div class="ai-sec">
-            <div class="ai-sec-h">
-              <span class="ai-sec-t">模型配置</span>
-              <span class="hint">点选一个用于生成 · 支持多个 OpenAI 兼容服务（/chat/completions）</span>
-              <span class="flex1"></span>
-              <button id="btn-ai-add" class="btn sm">+ 添加模型配置</button>
-            </div>
-            <div id="ai-profiles" class="ai-profiles"></div>
-          </div>
           <div class="ai-sec">
             <div class="ai-sec-h"><span class="ai-sec-t">生成隧道草案</span><span id="ai-use-note" class="hint">草案不会自动写入，逐条确认后才加到当前设备</span></div>
             <textarea id="ai-prompt" rows="3" placeholder="例如：把本机 8080 的 web 服务用 tcp 映射到远程 18080；再起一条 http 隧道，把 3000 挂到 app.example.com"></textarea>
