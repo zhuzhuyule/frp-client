@@ -19,6 +19,9 @@ const state = {
   probing: false,
   cfg: { raw: "", basics: null, proxies: [], storeMode: false },
   logKind: "stdout",
+  // 日志分页：下一页（更早）的字节 offset 与是否还有更多
+  logOff: 0,
+  logMore: false,
   promptedCreds: false,
   storeMode: false,
   // 最近一次「检查更新」的结果：{ version, at }，只在用户点过之后才有值
@@ -270,12 +273,11 @@ function renderTargetTabs() {
 
 function applyMode() {
   const remote = isRemote();
-  const t = activeTarget();
-  const managed = !remote && t && t.managed;
-  $("proc-btns").classList.toggle("hidden", !managed);
+  // 启停接管后所有本机实例都有进程按钮，不再限 LaunchAgent 托管
+  $("proc-btns").classList.toggle("hidden", remote);
   const apply = document.querySelectorAll(".js-apply");
   apply.forEach((b) => {
-    b.textContent = remote ? "保存并热加载" : managed ? "保存并重启 frpc" : "保存";
+    b.textContent = remote ? "保存并热加载" : "保存并重启 frpc";
     b.disabled = state.busy;
   });
   $("log-local").classList.toggle("hidden", remote);
@@ -798,12 +800,7 @@ document.querySelectorAll(".js-apply").forEach((b) =>
   b.addEventListener("click", async () => {
     if (loadingGuard()) return;
     const remote = isRemote();
-    const t = activeTarget();
-    const managed = !remote && t && t.managed;
-    if (!remote && !managed) {
-      toast("该实例不由 App 监督，只写入配置文件，请自行重启它", "info");
-    }
-    if (!remote && managed) {
+    if (!remote) {
       const ok = await showConfirm(
         "保存并重启 frpc？",
         "写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
@@ -873,7 +870,7 @@ function statusStrip(t, s) {
     : "";
   return `<div class="st-line1">
       <span class="badge ${live ? "run" : "stop"}">● 控制台${live ? "连接成功" : "连接未成功"}</span>
-      <span class="badge ${local && t.managed ? "mgd" : "ro"}">${local ? (t.managed ? "本机 · 托管" : "本机") : "远端"}</span>
+      <span class="badge ${local && t.bootstrapped ? "mgd" : "ro"}">${local ? (t.bootstrapped ? "本机 · 托管" : "本机") : "远端"}</span>
       ${run}
       ${live ? cell("隧道", `${s.runningCount} / ${s.proxyCount}`) : ""}
       ${bad ? cell("异常", `${bad} 条`, true) : ""}
@@ -893,12 +890,10 @@ function renderConfigOverview() {
   $("i-ep-run").textContent = t
     ? t.kind === "local"
       ? t.pid
-        ? t.managed
+        ? t.bootstrapped
           ? "运行中 · LaunchAgent 监督"
-          : "运行中 · 非本 App 启动"
-        : t.managed
-          ? "未运行 · 可由本 App 启动"
-          : "未运行 · 不由本 App 监督"
+          : "运行中 · 独立进程"
+        : "未运行 · 可由本 App 启动"
       : "需在目标机上操作"
     : "—";
   const hasCfg = !!state.cfg.raw;
@@ -985,21 +980,18 @@ function styleSrvTabs() {
   $("srv-raw").classList.toggle("hidden", state.srv.tab !== "raw");
 }
 
-/* 保存动作按设备类型给按钮：远端只能热加载，托管本机可以重启，非托管只能写文件 */
+/* 保存动作按设备类型给按钮：远端只能热加载，本机（托管与否）都能保存并重启 */
 function styleSrvFoot() {
   const t = activeTarget();
   const remote = !t || t.kind === "remote";
-  const managed = !remote && t.managed;
   const save = $("btn-server-save");
   const apply = $("btn-server-apply");
   save.classList.toggle("hidden", remote);
-  apply.classList.toggle("hidden", !remote && !managed);
+  apply.classList.remove("hidden");
   apply.textContent = remote ? "保存并热加载" : "保存并重启 frpc";
   $("srv-note").textContent = remote
     ? "远端走 API 热加载，不能重启它的进程"
-    : managed
-      ? "保存＝只写文件；保存并重启会短暂中断所有隧道"
-      : "该实例不由 App 监督，只能写文件，请自行重启它";
+    : "保存＝只写文件；保存并重启会短暂中断所有隧道";
   const attn = state.srv.dirty;
   save.classList.toggle("attn", attn);
   apply.classList.toggle("attn", attn);
@@ -1235,15 +1227,39 @@ async function loadLog() {
   $("log-out").title = base(s.logPath) || "frpc.log";
   $("log-err").title = base(s.errPath) || "frpc.err";
   $("log-path").textContent = state.logKind === "stdout" ? s.logPath || "" : s.errPath || "";
-  const text = await call("read_log", { kind: state.logKind });
-  if (okv(text)) {
-    $("log-box").textContent = text || "（空）";
+  const page = await call("read_log", { kind: state.logKind, offset: 0 });
+  if (okv(page)) {
+    state.logOff = page.next;
+    state.logMore = page.hasMore;
+    $("log-box").textContent = page.text || "（空）";
     $("log-box").scrollTop = $("log-box").scrollHeight;
   }
+  $("log-more").classList.toggle("hidden", !state.logMore);
   const out = state.logKind === "stdout";
   $("log-out").className = "btn sm" + (out ? " primary" : "");
   $("log-err").className = "btn sm" + (!out ? " primary" : "");
 }
+
+/* 往前翻一页：新内容拼在顶部，滚动位置按增高量补偿，视口不跳 */
+async function loadOlderLog() {
+  if (state.busy) return;
+  const box = $("log-box");
+  const prevH = box.scrollHeight;
+  const prevT = box.scrollTop;
+  state.busy = true;
+  try {
+    const page = await call("read_log", { kind: state.logKind, offset: state.logOff });
+    if (!okv(page)) return;
+    box.textContent = (page.text || "") + box.textContent;
+    state.logOff = page.next;
+    state.logMore = page.hasMore;
+    $("log-more").classList.toggle("hidden", !page.hasMore);
+    box.scrollTop = prevT + (box.scrollHeight - prevH);
+  } finally {
+    state.busy = false;
+  }
+}
+$("log-more").addEventListener("click", loadOlderLog);
 $("log-out").addEventListener("click", () => {
   state.logKind = "stdout";
   loadLog();

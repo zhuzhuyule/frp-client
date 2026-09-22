@@ -6,10 +6,10 @@ use backend::{
     apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
     fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_port_owners,
     parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
-    read_config_file, reveal_in_finder,
-    remove_proxy, restart, restore_config_from_backup, running_frpcs, save_config, save_locals,
-    save_remotes, start, stop, store_add, store_delete, store_proxies, store_replace,
-    store_update, tail, validate_host, version_at_least, wait_ready,
+    read_config_file, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
+    running_frpcs, save_config, save_locals, save_remotes, start_instance, stop_instance,
+    store_add, store_delete, store_proxies, store_replace, store_update, tail_page, validate_host,
+    version_at_least, wait_ready,
     Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyAdv, ProxyCfg, RemoteTarget,
 };
 use serde::Deserialize;
@@ -334,6 +334,7 @@ async fn get_targets(state: State<'_, AppState>) -> Result<serde_json::Value, St
         list.push(serde_json::json!({
             "kind": "local", "id": l.id, "name": l.name, "host": host, "port": port,
             "user": l.target.user, "os": local_os(), "managed": l.managed, "pid": l.pid,
+            "bootstrapped": l.bootstrapped,
             "needCreds": l.need_creds, "configPath": l.id,
         }));
     }
@@ -928,12 +929,8 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             let inst = local_instance(state, &id)?;
             let basics = parse_basics(&new_src).map_err(|e| format!("{e:#}"))?;
             guard_local_basics(state, &id, &basics)?;
-            if with_restart && !inst.managed {
-                return Err(
-                    "该实例不由本 App 的 LaunchAgent 监督，只能保存配置，请自行重启它".to_string()
-                );
-            }
             let t = inst.target.clone();
+            let managed = inst.managed;
             let new_src2 = new_src.clone();
             blocked(move || -> anyhow::Result<(String, String)> {
                 let bak = save_config(&t, &new_src2)?;
@@ -945,13 +942,13 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                 let mut note = format!("已保存（备份 {bak_name}）");
                 let mut src = new_src2.clone();
                 if with_restart {
-                    restart(&t)?;
+                    restart_instance(&t, managed)?;
                     if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
                         note.push_str(" · frpc 已重启并就绪");
                     } else {
                         match restore_config_from_backup(&t, &bak) {
                             Ok(restored) => {
-                                restart(&t)?;
+                                restart_instance(&t, managed)?;
                                 if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
                                     src = restored;
                                     note.push_str(&format!(
@@ -1027,15 +1024,13 @@ async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, 
         Active::Remote(_) => return Err("远端目标不支持进程控制，请在目标机上操作".into()),
     };
     let inst = local_instance(&state, &id)?;
-    if !inst.managed {
-        return Err("该实例不由本 App 的 LaunchAgent 监督，只能在配置页保存改动".into());
-    }
     let t = inst.target.clone();
+    let managed = inst.managed;
     let note = blocked(move || -> anyhow::Result<String> {
         match action.as_str() {
-            "start" => start(&t)?,
-            "stop" => stop(&t)?,
-            _ => restart(&t)?,
+            "start" => start_instance(&t, managed)?,
+            "stop" => stop_instance(&t, managed)?,
+            _ => restart_instance(&t, managed)?,
         }
         let verb = match action.as_str() {
             "start" => "启动",
@@ -1053,11 +1048,17 @@ async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, 
         }
     })
     .await?;
+    // 进程状态变了（pid / bootstrapped），让下次读取重新发现
+    rescan(&state).await.ok();
     Ok(note)
 }
 
 #[tauri::command]
-async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, String> {
+async fn read_log(
+    state: State<'_, AppState>,
+    kind: String,
+    offset: u64,
+) -> Result<serde_json::Value, String> {
     let id = match active_of(&state) {
         Active::Local(id) => id,
         Active::Remote(_) => {
@@ -1070,13 +1071,20 @@ async fn read_log(state: State<'_, AppState>, kind: String) -> Result<String, St
     } else {
         t.log_path.clone()
     };
-    blocked(move || {
+    let page = blocked(move || -> anyhow::Result<serde_json::Value> {
         if !path.exists() {
-            return Ok(format!("（日志文件不存在：{}）", path.display()));
+            return Ok(serde_json::json!({
+                "text": format!("（日志文件不存在：{}）", path.display()),
+                "next": 0, "hasMore": false, "size": 0,
+            }));
         }
-        tail(&path, 64_000).map_err(|e| anyhow::anyhow!("{e}"))
+        let p = tail_page(&path, offset, 128_000)?;
+        Ok(serde_json::json!({
+            "text": p.text, "next": p.next, "hasMore": p.has_more, "size": p.size,
+        }))
     })
-    .await
+    .await?;
+    Ok(page)
 }
 
 /// 在 Finder 里定位当前目标的文件。参数只收 log / err / config 三种枚举，

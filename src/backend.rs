@@ -376,8 +376,10 @@ pub struct LocalInstance {
     pub id: String,
     pub name: String,
     pub target: Target,
-    /// 只有 LaunchAgent 监督的那个实例允许 App 启停
+    /// 该实例的配置文件正是 LaunchAgent 监督的那份（启停走 launchctl 而非裸进程）
     pub managed: bool,
+    /// managed 的实例是否真的已 bootstrap 进 launchd（plist 存在 ≠ 在管）
+    pub bootstrapped: bool,
     pub pid: Option<u32>,
     /// 配置里没有可用的 webServer 凭据，需要用户补全
     pub need_creds: bool,
@@ -518,8 +520,9 @@ pub fn discover_locals() -> Vec<LocalInstance> {
         out.push(LocalInstance {
             id: p.display().to_string(),
             name: s.map(|s| s.name.clone()).unwrap_or_default(),
-            target: t,
             managed: p == managed,
+            bootstrapped: p == managed && launchd_bootstrapped(&t.launchd_label),
+            target: t,
             pid: running.iter().find(|(_, rp)| *rp == p).map(|(pid, _)| *pid),
             need_creds: false,
         });
@@ -1204,9 +1207,151 @@ pub fn start(t: &Target) -> Result<()> {
     )
 }
 
+/// LaunchAgent 是否真的已 bootstrap 进 launchd。plist 文件存在不代表在管，
+/// `launchctl print` 只有 bootstrap 过才返回 0。
+pub fn launchd_bootstrapped(label: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let target = format!("{}/{}", gui_domain(), label);
+        run("launchctl", &["print", &target])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = label;
+        false
+    }
+}
+
+/// 定位 frpc 二进制：FRPC_BIN 覆盖 → 常见安装位置 → PATH 查询
+pub fn frpc_binary() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("FRPC_BIN") {
+        let p = PathBuf::from(&v);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    for c in ["/opt/homebrew/bin/frpc", "/usr/local/bin/frpc", "/usr/bin/frpc"] {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    #[cfg(windows)]
+    let found = run("where", &["frpc"]).ok();
+    #[cfg(not(windows))]
+    let found = run("sh", &["-c", "command -v frpc"]).ok();
+    found
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        run("tasklist", &["/FI", &format!("PID eq {pid}"), "/NH"])
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        run("kill", &["-0", &pid.to_string()])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// 停一个非托管进程：TERM 后宽限等待，超时再 KILL
+pub fn stop_process(pid: u32, grace: Duration) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let o = run("taskkill", &["/PID", &pid.to_string(), "/F"])?;
+        return check(o.status.success(), &o.stderr, "taskkill");
+    }
+    #[cfg(not(windows))]
+    {
+        let o = run("kill", &["-TERM", &pid.to_string()])?;
+        check(o.status.success(), &o.stderr, &format!("kill -TERM {pid}"))?;
+        let deadline = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < deadline {
+            if !process_alive(pid) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let o = run("kill", &["-KILL", &pid.to_string()])?;
+        check(o.status.success(), &o.stderr, &format!("kill -KILL {pid}"))
+    }
+}
+
+/// 起一个非托管实例：spawn 脱离的 frpc，stdout/stderr 落到与 LaunchAgent 同款日志文件
+pub fn start_process(t: &Target) -> Result<()> {
+    use std::process::Stdio;
+    let bin = frpc_binary()
+        .ok_or_else(|| anyhow::anyhow!("找不到 frpc 二进制，请先安装 frpc 或设置 FRPC_BIN 环境变量"))?;
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&t.log_path)
+        .with_context(|| format!("打开日志 {} 失败", t.log_path.display()))?;
+    let err = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&t.err_path)
+        .with_context(|| format!("打开日志 {} 失败", t.err_path.display()))?;
+    std::process::Command::new(bin)
+        .args(["-c", &t.config_path.to_string_lossy()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(err))
+        .spawn()
+        .context("启动 frpc 失败")?;
+    Ok(())
+}
+
+/// 按配置文件路径找当前运行的 pid（发现结果可能过期，动作前重新解析）
+pub fn running_pid_for(config_path: &Path) -> Option<u32> {
+    running_frpcs()
+        .into_iter()
+        .find(|(_, p)| p == config_path)
+        .map(|(pid, _)| pid)
+}
+
+pub fn start_instance(t: &Target, managed: bool) -> Result<()> {
+    if managed {
+        return start(t);
+    }
+    if running_pid_for(&t.config_path).is_some() {
+        bail!("该实例已在运行");
+    }
+    start_process(t)
+}
+
+pub fn stop_instance(t: &Target, managed: bool) -> Result<()> {
+    if managed {
+        return stop(t);
+    }
+    let pid = running_pid_for(&t.config_path)
+        .ok_or_else(|| anyhow::anyhow!("该实例当前没有在运行"))?;
+    stop_process(pid, Duration::from_secs(5))
+}
+
+pub fn restart_instance(t: &Target, managed: bool) -> Result<()> {
+    if managed {
+        return restart(t);
+    }
+    if let Some(pid) = running_pid_for(&t.config_path) {
+        stop_process(pid, Duration::from_secs(5))?;
+    }
+    start_process(t)
+}
+
 /// 轮询 /api/status 直到可达或超时
-pub fn wait_ready(e: &Endpoint, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
+pub fn wait_ready(e: &Endpoint, timeout: Duration) -> bool {    let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if fetch_status(e).is_ok() {
             return true;
@@ -1760,24 +1905,46 @@ pub fn reveal_in_finder(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn tail(path: &Path, max_bytes: u64) -> Result<String> {
+pub struct LogPage {
+    pub text: String,
+    /// 下一页（更早内容）的 offset；已对齐到行边界
+    pub next: u64,
+    pub has_more: bool,
+    pub size: u64,
+}
+
+/// 从文件尾部按页往前读：offset = 已往尾部消费的字节数（0 是最新一页），
+/// 每页丢掉窗口最前的半行，`next` 因此永远落在换行边界上，页与页拼接不重不漏。
+pub fn tail_page(path: &Path, offset: u64, size: u64) -> Result<LogPage> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)
         .with_context(|| format!("打开日志 {} 失败", path.display()))?;
     let len = f.metadata()?.len();
-    let start = len.saturating_sub(max_bytes);
-    if start > 0 {
-        f.seek(SeekFrom::Start(start))?;
-    }
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    // 若是从中间截断，丢掉第一行（可能不完整）
-    if start > 0 {
+    let end = len.saturating_sub(offset);
+    let win = end.saturating_sub(size);
+    f.seek(SeekFrom::Start(win))?;
+    let mut buf = vec![0u8; (end - win) as usize];
+    f.read_exact(&mut buf)?;
+    let mut consumed = win;
+    // 只有窗口起点落在半行上才丢第一行；正好在行边界时整行保留
+    let aligned = win == 0 || {
+        f.seek(SeekFrom::Start(win - 1))?;
+        let mut prev = [0u8; 1];
+        f.read_exact(&mut prev)?;
+        prev[0] == b'\n'
+    };
+    if !aligned {
         if let Some(nl) = buf.iter().position(|b| *b == b'\n') {
             buf.drain(..=nl);
+            consumed += nl as u64 + 1;
         }
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(LogPage {
+        text: String::from_utf8_lossy(&buf).into_owned(),
+        next: len - consumed,
+        has_more: consumed > 0,
+        size: len,
+    })
 }
 
 #[cfg(test)]
@@ -2272,15 +2439,34 @@ maxFailed = 3
     }
 
     #[test]
-    fn tail_trims_to_last_lines() {
-        let dir = std::env::temp_dir().join(format!("frpc-tail-{}", std::process::id()));
+    fn tail_page_pages_back_to_start_without_gaps() {
+        let dir = std::env::temp_dir().join(format!("frpc-page-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.log");
-        std::fs::write(&p, "line1\nline2\nline3\n").unwrap();
-        let s = tail(&p, 12).unwrap(); // 从中间截断，首行不完整被丢弃
-        assert_eq!(s, "line3\n");
-        let s = tail(&p, 1000).unwrap();
-        assert_eq!(s, "line1\nline2\nline3\n");
+        // 每行 8 字节："l0000001\n" 形态换成等长可控内容
+        let lines: String = (1..=10).map(|i| format!("line{i:03}\n")).collect();
+        assert_eq!(lines.len(), 80);
+        std::fs::write(&p, &lines).unwrap();
+
+        // 第一页 32 字节 → 尾部 4 行（对齐丢半行后）
+        let a = tail_page(&p, 0, 32).unwrap();
+        assert_eq!(a.text, "line007\nline008\nline009\nline010\n");
+        assert!(a.has_more);
+        assert_eq!(a.size, 80);
+        // 第二页从 next 继续 → 恰好接上，不重不漏
+        let b = tail_page(&p, a.next, 32).unwrap();
+        assert_eq!(b.text, "line003\nline004\nline005\nline006\n");
+        assert!(b.has_more);
+        let c = tail_page(&p, b.next, 32).unwrap();
+        assert_eq!(c.text, "line001\nline002\n");
+        assert!(!c.has_more);
+        assert_eq!(c.next, 80); // 已读到文件头：offset 推进到全长
+        assert_eq!(c.text + &b.text + &a.text, lines);
+
+        // offset 越过文件尾 → 空页且不再有更多
+        let d = tail_page(&p, 1000, 32).unwrap();
+        assert_eq!(d.text, "");
+        assert!(!d.has_more);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2441,7 +2627,7 @@ maxFailed = 3
         assert!(!frpc_pids().is_empty());
         let src = read_config_file(&t).unwrap();
         assert!(src.contains("[[proxies]]"));
-        assert!(tail(&t.log_path, 5000).is_ok());
+        assert!(tail_page(&t.log_path, 0, 5000).is_ok());
 
         let owners = local_port_owners();
         for l in &locals {

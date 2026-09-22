@@ -129,12 +129,13 @@
         <button id="log-out" class="btn primary sm">运行日志</button>
         <button id="log-err" class="btn sm">错误日志</button>
         <button id="log-refresh" class="btn sm">刷新</button>
+        <button id="log-more" class="btn sm hidden" title="向上追加更早的一页日志">加载更早</button>
         <button id="btn-reveal-log" class="btn sm" title="在 Finder 中定位当前这个日志文件">在 Finder 中显示</button>
         <span id="log-path" class="flex1 right faint"></span>
       </div>
       <div class="card ai-card hidden" id="log-remote">
-        <div class="ai-title">远端目标 / 未托管实例不支持查看日志</div>
-        <div class="ai-sub">切换到受 LaunchAgent 监督的本机目标查看日志，或 SSH 到目标机器上查看其 frpc 日志。</div>
+        <div class="ai-title">远端目标不支持查看日志</div>
+        <div class="ai-sub">切换到本机目标查看日志，或 SSH 到目标机器上查看其 frpc 日志。</div>
       </div>
       <pre id="log-box" class="raw flex1"></pre>
     </section>
