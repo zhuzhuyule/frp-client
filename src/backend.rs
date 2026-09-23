@@ -4,6 +4,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
+use crate::l10n;
+
 // ---------- environment / target discovery ----------
 
 pub const DEFAULT_CONFIG_PATH: &str = "/opt/homebrew/etc/frpc/frpc.toml";
@@ -136,10 +138,16 @@ pub fn local_console_addr(configured: &str) -> String {
 pub fn check_local_console_addr(addr: &str) -> Result<()> {
     let a = addr.trim();
     if a.is_empty() {
-        bail!("控制台地址不能为空，本机一般填 127.0.0.1");
+        bail!(l10n::t(
+            "控制台地址不能为空，本机一般填 127.0.0.1",
+            "Console address must not be empty; use 127.0.0.1 for this machine"
+        ));
     }
     if a == "0.0.0.0" || a == "::" {
-        bail!("控制台不能绑定 {a}：会把 frpc 的管理接口暴露给整个局域网");
+        bail!(l10n::t(
+            format!("控制台不能绑定 {a}：会把 frpc 的管理接口暴露给整个局域网"),
+            format!("Console must not bind {a}: that exposes frpc's admin API to the whole LAN")
+        ));
     }
     if a.starts_with("127.") || a.eq_ignore_ascii_case("localhost") {
         return Ok(());
@@ -147,7 +155,10 @@ pub fn check_local_console_addr(addr: &str) -> Result<()> {
     if local_interface_ips().iter().any(|ip| ip == a) {
         return Ok(());
     }
-    bail!("{a} 不是本机地址：这里要填的是这台机器上 frpc 绑定的控制台地址，本机一般用 127.0.0.1")
+    bail!(l10n::t(
+        format!("{a} 不是本机地址：这里要填的是这台机器上 frpc 绑定的控制台地址，本机一般用 127.0.0.1"),
+        format!("{a} is not a local address: set it to the console address frpc binds on this machine (usually 127.0.0.1)")
+    ))
 }
 
 // ---------- remote targets (app-owned config) ----------
@@ -181,25 +192,37 @@ impl RemoteTarget {
 pub fn validate_host(s: &str) -> Result<()> {
     let h = s.trim();
     if h.is_empty() {
-        bail!("地址不能为空");
+        bail!(l10n::t("地址不能为空", "Address must not be empty"));
     }
     if h.chars().any(|c| c.is_whitespace()) {
-        bail!("地址不能含空格");
+        bail!(l10n::t("地址不能含空格", "Address must not contain whitespace"));
     }
     let ok = h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     if !ok {
-        bail!("地址只允许字母、数字、. 和 -（收到 {h}）");
+        bail!(l10n::t(
+            format!("地址只允许字母、数字、. 和 -（收到 {h}）"),
+            format!("Address may only contain letters, digits, . and - (got {h})")
+        ));
     }
     // 以数字开头的地址必须写成完整 IPv4，挡掉 192.168.3.10cc 这类手滑
     if h.starts_with(|c: char| c.is_ascii_digit()) {
         let parts: Vec<_> = h.split('.').collect();
         if parts.len() != 4 {
-            bail!("IPv4 需要四段（收到 {h}）");
+            bail!(l10n::t(
+                format!("IPv4 需要四段（收到 {h}）"),
+                format!("IPv4 needs four octets (got {h})")
+            ));
         }
         for p in parts {
-            let n: u32 = p.parse().context(format!("IPv4 段不合法：{h}"))?;
+            let n: u32 = p.parse().context(l10n::t(
+                format!("IPv4 段不合法：{h}"),
+                format!("Invalid IPv4 octet: {h}"),
+            ))?;
             if n > 255 {
-                bail!("IPv4 段超出 0-255：{h}");
+                bail!(l10n::t(
+                    format!("IPv4 段超出 0-255：{h}"),
+                    format!("IPv4 octet out of 0-255: {h}")
+                ));
             }
         }
     }
@@ -246,11 +269,11 @@ pub fn save_remotes(rs: &[RemoteTarget]) -> Result<()> {
     let path = app_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
-            .with_context(|| format!("创建 {} 失败", dir.display()))?;
+            .with_context(|| l10n::t(format!("创建 {} 失败", dir.display()), format!("Failed to create {}", dir.display())))?;
     }
     // 保留文件里的其它表（如 [local]），只整体替换 [[remote]]
     let mut doc = match std::fs::read_to_string(&path) {
-        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Ok(src) => src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?,
         Err(_) => DocumentMut::new(),
     };
     let mut aot = ArrayOfTables::new();
@@ -321,10 +344,10 @@ pub fn save_locals(items: &[LocalSaved]) -> Result<()> {
     let path = app_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
-            .with_context(|| format!("创建 {} 失败", dir.display()))?;
+            .with_context(|| l10n::t(format!("创建 {} 失败", dir.display()), format!("Failed to create {}", dir.display())))?;
     }
     let mut doc = match std::fs::read_to_string(&path) {
-        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Ok(src) => src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?,
         Err(_) => DocumentMut::new(),
     };
     let mut aot = ArrayOfTables::new();
@@ -356,16 +379,16 @@ pub fn save_locals(items: &[LocalSaved]) -> Result<()> {
 fn write_app_doc(doc: &DocumentMut) -> Result<()> {
     let path = app_config_path();
     let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, doc.to_string()).context("写 app.toml 失败")?;
+    std::fs::write(&tmp, doc.to_string()).context(l10n::t("写 app.toml 失败", "Failed to write app.toml"))?;
     // 0600 是 POSIX 语义；Windows 上 ACL 由用户目录继承，无对应概念
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .context("app.toml 权限设置失败")?;
+            .context(l10n::t("app.toml 权限设置失败", "Failed to set app.toml permissions"))?;
     }
     std::fs::rename(&tmp, &path)
-        .with_context(|| format!("替换 {} 失败", path.display()))?;
+        .with_context(|| l10n::t(format!("替换 {} 失败", path.display()), format!("Failed to replace {}", path.display())))?;
     Ok(())
 }
 
@@ -385,7 +408,7 @@ pub fn load_ai_profiles() -> Result<Vec<AiProfile>> {
     let Ok(src) = std::fs::read_to_string(app_config_path()) else {
         return Ok(Vec::new());
     };
-    let doc = src.parse::<DocumentMut>().context("app.toml 解析失败")?;
+    let doc = src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?;
     let s_of = |t: &dyn toml_edit::TableLike, k: &str| -> String {
         t.get(k)
             .and_then(|it| it.as_value())
@@ -470,15 +493,52 @@ pub fn ai_seeded() -> bool {
         == Some(true)
 }
 
+// ---------- UI 语言 ----------
+
+/// [ui] lang："zh" | "en" | ""（未设置）
+pub fn load_ui_lang() -> String {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return String::new();
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return String::new();
+    };
+    doc.get("ui")
+        .and_then(|it| it.as_table())
+        .and_then(|t| {
+            t.get("lang")
+                .and_then(|it| it.as_value())
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+pub fn save_ui_lang(lang: &str) -> Result<()> {
+    let path = app_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| l10n::t(format!("创建 {} 失败", dir.display()), format!("Failed to create {}", dir.display())))?;
+    }
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(src) => src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?,
+        Err(_) => DocumentMut::new(),
+    };
+    let mut t = Table::new();
+    t["lang"] = value(lang);
+    doc["ui"] = Item::Table(t);
+    write_app_doc(&doc)
+}
+
 /// 整体替换 [[aiModel]] 与 [ai]（default + seeded 两个键），其它表原样保留
 pub fn save_ai_profiles(list: &[AiProfile], default: &str) -> Result<()> {
     let path = app_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
-            .with_context(|| format!("创建 {} 失败", dir.display()))?;
+            .with_context(|| l10n::t(format!("创建 {} 失败", dir.display()), format!("Failed to create {}", dir.display())))?;
     }
     let mut doc = match std::fs::read_to_string(&path) {
-        Ok(src) => src.parse::<DocumentMut>().context("app.toml 解析失败")?,
+        Ok(src) => src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?,
         Err(_) => DocumentMut::new(),
     };
     if list.is_empty() && default.is_empty() {
@@ -572,20 +632,31 @@ pub fn ai_list_models(base: &str, key: &str) -> Result<Vec<String>, String> {
         req = req.set("Authorization", &format!("Bearer {key}"));
     }
     let resp = req.call().map_err(|e| match e {
-        ureq::Error::Status(401, _) | ureq::Error::Status(403, _) => {
-            format!("鉴权失败（{url} 返回 401/403），检查 API Key")
-        }
-        ureq::Error::Status(404, _) => {
-            format!("{url} 返回 404，这个服务可能不支持列出模型，直接手填模型名")
-        }
-        other => format!("连接 {url} 失败：{other}"),
+        ureq::Error::Status(401, _) | ureq::Error::Status(403, _) => l10n::t(
+            format!("鉴权失败（{url} 返回 401/403），检查 API Key"),
+            format!("Auth failed ({url} returned 401/403); check the API key"),
+        ),
+        ureq::Error::Status(404, _) => l10n::t(
+            format!("{url} 返回 404，这个服务可能不支持列出模型，直接手填模型名"),
+            format!("{url} returned 404; this service may not support listing models, enter the model name manually"),
+        ),
+        other => l10n::t(
+            format!("连接 {url} 失败：{other}"),
+            format!("Failed to connect to {url}: {other}"),
+        ),
     })?;
     let text = resp
         .into_string()
-        .map_err(|e| format!("读取 {url} 响应失败：{e}"))?;
+        .map_err(|e| l10n::t(
+            format!("读取 {url} 响应失败：{e}"),
+            format!("Failed to read response from {url}: {e}"),
+        ))?;
     let models = parse_models_json(&text);
     if models.is_empty() {
-        return Err("连接成功，但响应里没解析出模型列表，直接手填模型名".into());
+        return Err(l10n::t(
+            "连接成功，但响应里没解析出模型列表，直接手填模型名",
+            "Connected, but no model list in the response; enter the model name manually",
+        ));
     }
     Ok(models)
 }
@@ -629,19 +700,28 @@ pub fn parse_ai_drafts(text: &str) -> Result<Vec<AiDraft>, String> {
         ('{', '}')
     };
     let (Some(start), Some(end)) = (t.find(open), t.rfind(close)) else {
-        return Err("模型没有返回 JSON".into());
+        return Err(l10n::t("模型没有返回 JSON", "The model returned no JSON").into());
     };
     if end < start {
-        return Err("模型输出不是合法 JSON".into());
+        return Err(l10n::t("模型输出不是合法 JSON", "Model output is not valid JSON").into());
     }
-    let v: serde_json::Value =
-        serde_json::from_str(&t[start..=end]).map_err(|e| format!("解析模型输出失败：{e}"))?;
+    let v: serde_json::Value = serde_json::from_str(&t[start..=end])
+        .map_err(|e| {
+            l10n::t(
+                format!("解析模型输出失败：{e}"),
+                format!("Failed to parse model output: {e}"),
+            )
+        })?;
     let arr = match v.get("tunnels").and_then(|x| x.as_array()) {
         Some(a) => Some(a.clone()),
         None => v.as_array().cloned(),
     };
     let Some(arr) = arr else {
-        return Err("模型输出里没有 tunnels 数组".into());
+        return Err(l10n::t(
+            "模型输出里没有 tunnels 数组",
+            "Model output has no tunnels array",
+        )
+        .into());
     };
     let pick = |o: &serde_json::Value, keys: &[&str]| -> String {
         for k in keys {
@@ -678,13 +758,17 @@ pub fn parse_ai_drafts(text: &str) -> Result<Vec<AiDraft>, String> {
         });
     }
     if out.is_empty() {
-        return Err("模型输出里没有可用的隧道（name 缺失或类型不是 tcp/udp/http）".into());
+        return Err(l10n::t(
+            "模型输出里没有可用的隧道（name 缺失或类型不是 tcp/udp/http）",
+            "No usable tunnels in model output (missing name or type is not tcp/udp/http)",
+        )
+        .into());
     }
     Ok(out)
 }
 
 pub fn ai_generate(cfg: &AiProfile, prompt: &str, context: &str) -> Result<Vec<AiDraft>, String> {
-    let system = format!(
+    let mut system = format!(
         "你是 frpc（fatedier/frp）隧道编排助手，只支持三种隧道类型：tcp、udp、http。\n\
          规则：\n\
          - 用户提到的每个细节（本地端口、远程端口、域名、本机地址）都必须体现在草案里，禁止丢弃；不确定的写进 reason 提醒，不要沉默省略。\n\
@@ -698,6 +782,10 @@ pub fn ai_generate(cfg: &AiProfile, prompt: &str, context: &str) -> Result<Vec<A
            {{\"tunnels\":[{{\"name\":\"web-18080\",\"type\":\"tcp\",\"localIp\":\"127.0.0.1\",\"localPort\":\"8080\",\"remotePort\":\"18080\",\"domains\":\"demo.example.com\",\"reason\":\"端口映射 8080→18080；tcp 通过 FRP 地址:端口访问，域名已记录在案，如需真正的域名访问请另建一条 http 隧道\"}},{{\"name\":\"app-3000\",\"type\":\"http\",\"localIp\":\"127.0.0.1\",\"localPort\":\"3000\",\"remotePort\":\"\",\"domains\":\"app.example.com\",\"reason\":\"只用域名访问，未要求远程端口\"}}]}}\n\
          现状：\n{context}"
     );
+    // UI 语言为英文时，追加一条规则让 reason 用英文写（前端直接展示给用户）
+    if crate::l10n::is_en() {
+        system.push_str("\n补充规则：所有 reason 字段必须用英文写（Write every \"reason\" field in English）。");
+    }
     let body = serde_json::json!({
         "model": cfg.model,
         "temperature": 0.2,
@@ -715,16 +803,31 @@ pub fn ai_generate(cfg: &AiProfile, prompt: &str, context: &str) -> Result<Vec<A
     }
     let v: serde_json::Value = req
         .send_json(body)
-        .map_err(|e| format!("调用 {url} 失败：{e}"))?
+        .map_err(|e| {
+            l10n::t(
+                format!("调用 {url} 失败：{e}"),
+                format!("Failed to call {url}: {e}"),
+            )
+        })?
         .into_json()
-        .map_err(|e| format!("解析模型响应失败：{e}"))?;
+        .map_err(|e| {
+            l10n::t(
+                format!("解析模型响应失败：{e}"),
+                format!("Failed to parse model response: {e}"),
+            )
+        })?;
     let content = v
         .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
-        .ok_or("模型响应里没有 choices[0].message.content（检查地址与模型名是否正确）")?;
+        .ok_or_else(|| {
+            l10n::t(
+                "模型响应里没有 choices[0].message.content（检查地址与模型名是否正确）",
+                "Model response has no choices[0].message.content (check the base URL and model name)",
+            )
+        })?;
     parse_ai_drafts(content)
 }
 
@@ -967,13 +1070,19 @@ pub fn fetch_status(e: &Endpoint) -> Result<Vec<ProxyStatus>> {
         .set("Authorization", &auth_header(e))
         .timeout(Duration::from_secs(4))
         .call()
-        .with_context(|| format!("GET {url} 失败（frpc 是否在运行？）"))?;
+        .with_context(|| l10n::t(
+            format!("GET {url} 失败（frpc 是否在运行？）"),
+            format!("GET {url} failed (is frpc running?)"),
+        ))?;
     let body: serde_json::Value = resp.into_json()?;
 
     let mut out = Vec::new();
     let map = body
         .as_object()
-        .ok_or_else(|| anyhow!("意外的 /api/status 响应结构"))?;
+        .ok_or_else(|| anyhow!(l10n::t(
+            "意外的 /api/status 响应结构",
+            "Unexpected /api/status response shape"
+        )))?;
     for (_ptype, arr) in map {
         if let Some(list) = arr.as_array() {
             for p in list {
@@ -993,13 +1102,26 @@ pub fn fetch_status(e: &Endpoint) -> Result<Vec<ProxyStatus>> {
 }
 
 /// 读取远端/本机 frpc 的当前 TOML 原文（GET /api/config）
+/// 非 2xx 时把 frpc 的 Msg 透出来（例如配置文件被删：400 "open xxx.toml: no such file"），
+/// 否则界面上只剩"连上了却读不到配置"，看不出根因。
 pub fn fetch_config(e: &Endpoint) -> Result<String> {
     let url = format!("{}/api/config", e.base_url);
-    let resp = ureq::get(&url)
+    let resp = match ureq::get(&url)
         .set("Authorization", &auth_header(e))
         .timeout(Duration::from_secs(5))
         .call()
-        .with_context(|| format!("GET {url} 失败"))?;
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            return Err(store_err(code, &resp.into_string().unwrap_or_default())).with_context(|| l10n::t(
+                "读取远端配置失败",
+                "Failed to read remote config",
+            ));
+        }
+        Err(other) => {
+            return Err(other).with_context(|| l10n::t(format!("GET {url} 失败"), format!("GET {url} failed")));
+        }
+    };
     Ok(resp.into_string()?)
 }
 
@@ -1007,15 +1129,29 @@ pub fn fetch_config(e: &Endpoint) -> Result<String> {
 pub fn put_config(e: &Endpoint, toml_src: &str) -> Result<()> {
     toml_src
         .parse::<DocumentMut>()
-        .context("新配置不是合法 TOML，拒绝提交")?;
+        .context(l10n::t(
+            "新配置不是合法 TOML，拒绝提交",
+            "New config is not valid TOML, refusing to submit",
+        ))?;
     let url = format!("{}/api/config", e.base_url);
-    ureq::put(&url)
+    match ureq::put(&url)
         .set("Authorization", &auth_header(e))
         .set("Content-Type", "text/plain")
         .timeout(Duration::from_secs(8))
         .send_string(toml_src)
-        .with_context(|| format!("PUT {url} 失败（热加载未生效）"))?;
-    Ok(())
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, resp)) => {
+            Err(store_err(code, &resp.into_string().unwrap_or_default())).with_context(|| l10n::t(
+                "远端拒绝热加载配置",
+                "Remote refused the config hot reload",
+            ))
+        }
+        Err(other) => Err(other).with_context(|| l10n::t(
+            format!("PUT {url} 失败（热加载未生效）"),
+            format!("PUT {url} failed (hot reload did not take effect)"),
+        )),
+    }
 }
 
 // ---------- store API (frpc >= 0.68 且配置了 store.path) ----------
@@ -1046,7 +1182,7 @@ fn store_call(method: &str, e: &Endpoint, path: &str, body: Option<&str>) -> Res
         match req.send_string(b) {
             Ok(r) => return Ok(r.into_string()?),
             Err(ureq::Error::Status(code, resp)) => return Err(store_err(code, &resp.into_string().unwrap_or_default())),
-            Err(other) => return Err(other).with_context(|| format!("{method} {url} 失败")),
+            Err(other) => return Err(other).with_context(|| l10n::t(format!("{method} {url} 失败"), format!("{method} {url} failed"))),
         }
     }
     match req.call() {
@@ -1054,7 +1190,7 @@ fn store_call(method: &str, e: &Endpoint, path: &str, body: Option<&str>) -> Res
         Err(ureq::Error::Status(code, resp)) => {
             Err(store_err(code, &resp.into_string().unwrap_or_default()))
         }
-        Err(other) => Err(other).with_context(|| format!("{method} {url} 失败")),
+        Err(other) => Err(other).with_context(|| l10n::t(format!("{method} {url} 失败"), format!("{method} {url} failed"))),
     }
 }
 
@@ -1116,15 +1252,20 @@ pub fn probe_store(e: &Endpoint) -> Result<bool> {
     {
         Ok(_) => Ok(true),
         Err(ureq::Error::Status(404, _)) => Ok(false),
-        Err(other) => Err(anyhow::Error::new(other).context(format!("GET {url} 失败"))),
+        Err(other) => Err(anyhow::Error::new(other).context(l10n::t(
+            format!("GET {url} 失败"),
+            format!("GET {url} failed"),
+        ))),
     }
 }
 
 /// store 里的代理条目；Err 表示这台 frpc 没有 store 能力（或不可达）
 pub fn store_proxies(e: &Endpoint) -> Result<Vec<ProxyCfg>> {
     let text = store_call("GET", e, "/api/store/proxies", None)?;
-    let val: serde_json::Value =
-        serde_json::from_str(&text).context("/api/store/proxies 返回的不是合法 JSON")?;
+    let val: serde_json::Value = serde_json::from_str(&text).context(l10n::t(
+        "/api/store/proxies 返回的不是合法 JSON",
+        "/api/store/proxies did not return valid JSON",
+    ))?;
     let arr = val
         .get("proxies")
         .and_then(|v| v.as_array())
@@ -1218,10 +1359,14 @@ pub fn store_replace(e: &Endpoint, original: &ProxyCfg, p: &NewProxy) -> Result<
             // 回滚：恢复原条目，原错误一并报出
             let name = original.name.clone();
             match store_add(e, &old) {
-                Ok(()) => bail!("{new_err}（原隧道 {name} 已还原）"),
-                Err(rb) => bail!(
-                    "{new_err}，且还原 {name} 也失败：{rb}，请手动检查该目标的隧道列表"
-                ),
+                Ok(()) => bail!(l10n::t(
+                    format!("{new_err}（原隧道 {name} 已还原）"),
+                    format!("{new_err} (original tunnel {name} has been restored)")
+                )),
+                Err(rb) => bail!(l10n::t(
+                    format!("{new_err}，且还原 {name} 也失败：{rb}，请手动检查该目标的隧道列表"),
+                    format!("{new_err}; restoring {name} also failed: {rb}. Check this target's tunnel list manually.")
+                )),
             }
         }
     }
@@ -1397,13 +1542,28 @@ pub fn latest_frp_release() -> Result<(String, String), String> {
         .set("User-Agent", "frp-client-tauri")
         .timeout(Duration::from_secs(8))
         .call()
-        .map_err(|e| format!("GET {url} 失败：{e}"))?
+        .map_err(|e| {
+            l10n::t(
+                format!("GET {url} 失败：{e}"),
+                format!("GET {url} failed: {e}"),
+            )
+        })?
         .into_json()
-        .map_err(|e| format!("解析 GitHub 响应失败：{e}"))?;
+        .map_err(|e| {
+            l10n::t(
+                format!("解析 GitHub 响应失败：{e}"),
+                format!("Failed to parse GitHub response: {e}"),
+            )
+        })?;
     let tag = body
         .get("tag_name")
         .and_then(|t| t.as_str())
-        .ok_or_else(|| "GitHub 响应里没有 tag_name".to_string())?
+        .ok_or_else(|| {
+            l10n::t(
+                "GitHub 响应里没有 tag_name",
+                "GitHub response has no tag_name",
+            )
+        })?
         .trim_start_matches('v')
         .to_string();
     let page = body
@@ -1527,14 +1687,20 @@ fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new(cmd)
         .args(args)
         .output()
-        .with_context(|| format!("执行 {cmd} {args:?} 失败"))
+        .with_context(|| l10n::t(
+            format!("执行 {cmd} {args:?} 失败"),
+            format!("Failed to run {cmd} {args:?}"),
+        ))
 }
 
 fn check(ok: bool, stderr: &[u8], what: &str) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        bail!("{what} 失败: {}", String::from_utf8_lossy(stderr).trim())
+        bail!(l10n::t(
+            format!("{what} 失败: {}", String::from_utf8_lossy(stderr).trim()),
+            format!("{what} failed: {}", String::from_utf8_lossy(stderr).trim())
+        ));
     }
 }
 
@@ -1651,24 +1817,33 @@ pub fn stop_process(pid: u32, grace: Duration) -> Result<()> {
 pub fn start_process(t: &Target) -> Result<()> {
     use std::process::Stdio;
     let bin = frpc_binary()
-        .ok_or_else(|| anyhow::anyhow!("找不到 frpc 二进制，请先安装 frpc 或设置 FRPC_BIN 环境变量"))?;
+        .ok_or_else(|| anyhow::anyhow!(l10n::t(
+            "找不到 frpc 二进制，请先安装 frpc 或设置 FRPC_BIN 环境变量",
+            "frpc binary not found; install frpc or set the FRPC_BIN environment variable"
+        )))?;
     let out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&t.log_path)
-        .with_context(|| format!("打开日志 {} 失败", t.log_path.display()))?;
+        .with_context(|| l10n::t(
+            format!("打开日志 {} 失败", t.log_path.display()),
+            format!("Failed to open log {}", t.log_path.display()),
+        ))?;
     let err = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&t.err_path)
-        .with_context(|| format!("打开日志 {} 失败", t.err_path.display()))?;
+        .with_context(|| l10n::t(
+            format!("打开日志 {} 失败", t.err_path.display()),
+            format!("Failed to open log {}", t.err_path.display()),
+        ))?;
     std::process::Command::new(bin)
         .args(["-c", &t.config_path.to_string_lossy()])
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
         .spawn()
-        .context("启动 frpc 失败")?;
+        .context(l10n::t("启动 frpc 失败", "Failed to start frpc"))?;
     Ok(())
 }
 
@@ -1685,7 +1860,7 @@ pub fn start_instance(t: &Target, managed: bool) -> Result<()> {
         return start(t);
     }
     if running_pid_for(&t.config_path).is_some() {
-        bail!("该实例已在运行");
+        bail!(l10n::t("该实例已在运行", "This instance is already running"));
     }
     start_process(t)
 }
@@ -1695,7 +1870,10 @@ pub fn stop_instance(t: &Target, managed: bool) -> Result<()> {
         return stop(t);
     }
     let pid = running_pid_for(&t.config_path)
-        .ok_or_else(|| anyhow::anyhow!("该实例当前没有在运行"))?;
+        .ok_or_else(|| anyhow::anyhow!(l10n::t(
+            "该实例当前没有在运行",
+            "This instance is not running"
+        )))?;
     stop_process(pid, Duration::from_secs(5))
 }
 
@@ -1733,7 +1911,10 @@ fn timestamp() -> String {
 pub fn save_config(t: &Target, toml_src: &str) -> Result<PathBuf> {
     toml_src
         .parse::<DocumentMut>()
-        .context("新配置不是合法 TOML，拒绝写入")?;
+        .context(l10n::t(
+            "新配置不是合法 TOML，拒绝写入",
+            "New config is not valid TOML, refusing to write",
+        ))?;
 
     let bak = t.config_path.with_file_name(format!(
         "{}.bak-{}",
@@ -1745,24 +1926,36 @@ pub fn save_config(t: &Target, toml_src: &str) -> Result<PathBuf> {
     ));
     if t.config_path.exists() {
         std::fs::copy(&t.config_path, &bak)
-            .with_context(|| format!("备份到 {} 失败", bak.display()))?;
+            .with_context(|| l10n::t(
+                format!("备份到 {} 失败", bak.display()),
+                format!("Failed to back up to {}", bak.display()),
+            ))?;
     }
 
     let tmp = t.config_path.with_extension("toml.tmp");
-    std::fs::write(&tmp, toml_src).context("写临时文件失败")?;
+    std::fs::write(&tmp, toml_src).context(l10n::t("写临时文件失败", "Failed to write temp file"))?;
     std::fs::rename(&tmp, &t.config_path)
-        .with_context(|| format!("替换 {} 失败", t.config_path.display()))?;
+        .with_context(|| l10n::t(
+            format!("替换 {} 失败", t.config_path.display()),
+            format!("Failed to replace {}", t.config_path.display()),
+        ))?;
     Ok(bak)
 }
 
 /// 用备份文件覆盖当前配置（原子替换），返回还原后的配置原文
 pub fn restore_config_from_backup(t: &Target, bak: &Path) -> Result<String> {
     let src = std::fs::read_to_string(bak)
-        .with_context(|| format!("读取备份 {} 失败", bak.display()))?;
+        .with_context(|| l10n::t(
+            format!("读取备份 {} 失败", bak.display()),
+            format!("Failed to read backup {}", bak.display()),
+        ))?;
     let tmp = t.config_path.with_extension("toml.tmp");
-    std::fs::write(&tmp, &src).context("写临时文件失败")?;
+    std::fs::write(&tmp, &src).context(l10n::t("写临时文件失败", "Failed to write temp file"))?;
     std::fs::rename(&tmp, &t.config_path)
-        .with_context(|| format!("还原 {} 失败", t.config_path.display()))?;
+        .with_context(|| l10n::t(
+            format!("还原 {} 失败", t.config_path.display()),
+            format!("Failed to restore {}", t.config_path.display()),
+        ))?;
     Ok(src)
 }
 
@@ -1822,8 +2015,10 @@ impl ProxyCfg {
     /// 还原成可提交的形态（store 改名回滚时要用原条目）
     pub fn to_new_proxy(&self) -> Result<NewProxy> {
         let n = |k: &str, v: &str| -> Result<i64> {
-            v.trim().parse::<i64>()
-                .with_context(|| format!("隧道 {} 的 {k} 无法当作端口：{v}", self.name))
+            v.trim().parse::<i64>().with_context(|| l10n::t(
+                format!("隧道 {} 的 {k} 无法当作端口：{v}", self.name),
+                format!("tunnel {} has {k} that is not a port: {v}", self.name),
+            ))
         };
         Ok(NewProxy {
             name: self.name.clone(),
@@ -1966,19 +2161,26 @@ pub fn apply_basics(src: &str, b: &Basics) -> Result<String> {
         .server_port
         .trim()
         .parse()
-        .context("serverPort 必须是数字")?;
+        .context(l10n::t("serverPort 必须是数字", "serverPort must be a number"))?;
     doc["serverPort"] = value(port);
 
     let auth = doc.entry("auth").or_insert(Item::Table(Table::new()));
-    let auth = auth.as_table_mut().context("auth 不是 table")?;
+    let auth = auth.as_table_mut().context(l10n::t("auth 不是 table", "auth is not a table"))?;
     auth["token"] = value(b.token.as_str());
 
     let ws = doc
         .entry("webServer")
         .or_insert(Item::Table(Table::new()));
-    let ws = ws.as_table_mut().context("webServer 不是 table")?;
+    let ws = ws.as_table_mut().context(l10n::t("webServer 不是 table", "webServer is not a table"))?;
     ws["addr"] = value(b.web_addr.as_str());
-    let wp: i64 = b.web_port.trim().parse().context("webServer.port 必须是数字")?;
+    let wp: i64 = b
+        .web_port
+        .trim()
+        .parse()
+        .context(l10n::t(
+            "webServer.port 必须是数字",
+            "webServer.port must be a number",
+        ))?;
     ws["port"] = value(wp);
     ws["user"] = value(b.web_user.as_str());
     ws["password"] = value(b.web_pass.as_str());
@@ -2021,27 +2223,36 @@ pub struct NewProxy {
 
 pub fn validate_new(p: &NewProxy, existing: &[String]) -> Result<()> {
     if p.name.trim().is_empty() {
-        bail!("隧道名称不能为空");
+        bail!(l10n::t("隧道名称不能为空", "Tunnel name must not be empty"));
     }
     if existing.iter().any(|n| n == &p.name) {
-        bail!("已存在同名隧道 {}", p.name);
+        bail!(l10n::t(
+            format!("已存在同名隧道 {}", p.name),
+            format!("A tunnel named {} already exists", p.name)
+        ));
     }
     if p.local_port <= 0 || p.local_port > 65535 {
-        bail!("localPort 不合法");
+        bail!(l10n::t("localPort 不合法", "localPort is invalid"));
     }
     match p.ptype.as_str() {
         "tcp" | "udp" => {
-            let rp = p.remote_port.context(format!("{} 隧道必须填 remotePort", p.ptype))?;
+            let rp = p.remote_port.context(l10n::t(
+                format!("{} 隧道必须填 remotePort", p.ptype),
+                format!("{} tunnels require remotePort", p.ptype),
+            ))?;
             if rp <= 0 || rp > 65535 {
-                bail!("remotePort 不合法");
+                bail!(l10n::t("remotePort 不合法", "remotePort is invalid"));
             }
         }
         "http" => {
             if domain_list(p.domain.as_deref().unwrap_or("")).is_empty() {
-                bail!("http 隧道必须填域名");
+                bail!(l10n::t("http 隧道必须填域名", "http tunnels require a domain"));
             }
         }
-        other => bail!("不支持的隧道类型 {other}"),
+        other => bail!(l10n::t(
+            format!("不支持的隧道类型 {other}"),
+            format!("Unsupported tunnel type {other}")
+        )),
     }
     validate_adv(&p.adv)?;
     Ok(())
@@ -2052,29 +2263,52 @@ fn validate_adv(a: &ProxyAdv) -> Result<()> {
     for (k, v) in [("useEncryption", &a.encrypt), ("useCompression", &a.compress)] {
         let t = v.trim();
         if !t.is_empty() && t != "true" && t != "false" {
-            bail!("{k} 只能是 开启 / 关闭");
+            bail!(l10n::t(
+                format!("{k} 只能是 开启 / 关闭"),
+                format!("{k} must be on or off")
+            ));
         }
     }
     let bw = a.bandwidth.trim();
     if !bw.is_empty() && !bandwidth_ok(bw) {
-        bail!("带宽限制格式不对：{bw}（只支持 KB / MB，如 1MB、500KB）");
+        bail!(l10n::t(
+            format!("带宽限制格式不对：{bw}（只支持 KB / MB，如 1MB、500KB）"),
+            format!("Bad bandwidth limit: {bw} (only KB / MB units, e.g. 1MB, 500KB)")
+        ));
     }
     let hc_on = !a.hc_type.trim().is_empty();
-    for (k, v) in [("健康检查间隔", &a.hc_interval), ("健康检查失败次数", &a.hc_failed)] {
+    for (k, k_en, v) in [
+        ("健康检查间隔", "Health check interval", &a.hc_interval),
+        ("健康检查失败次数", "Health check max failures", &a.hc_failed),
+    ] {
         let t = v.trim();
         if t.is_empty() {
             if hc_on {
-                bail!("{k} 不能为空");
+                bail!(l10n::t(
+                    format!("{k} 不能为空"),
+                    format!("{k_en} must not be empty")
+                ));
             }
             continue;
         }
-        let n: i64 = t.parse().map_err(|_| anyhow!("{k} 必须是整数"))?;
+        let n: i64 = t
+            .parse()
+            .map_err(|_| anyhow!(l10n::t(
+                format!("{k} 必须是整数"),
+                format!("{k_en} must be an integer")
+            )))?;
         if n <= 0 {
-            bail!("{k} 必须大于 0");
+            bail!(l10n::t(
+                format!("{k} 必须大于 0"),
+                format!("{k_en} must be greater than 0")
+            ));
         }
     }
     if !hc_on && (!a.hc_interval.trim().is_empty() || !a.hc_failed.trim().is_empty()) {
-        bail!("填了间隔或次数，就要选健康检查方式");
+        bail!(l10n::t(
+            "填了间隔或次数，就要选健康检查方式",
+            "If an interval or failure count is set, choose a health check type"
+        ));
     }
     Ok(())
 }
@@ -2216,11 +2450,17 @@ pub fn update_proxy(src: &str, original: &str, p: &NewProxy) -> Result<String> {
                 .and_then(|v| v.as_str())
                 == Some(original)
         })
-        .ok_or_else(|| anyhow!("未找到隧道 {original}"))?;
+        .ok_or_else(|| anyhow!(l10n::t(
+            format!("未找到隧道 {original}"),
+            format!("Tunnel {original} not found")
+        )))?;
     let tbl = proxies_aot(&mut doc)
         .iter_mut()
         .nth(idx)
-        .ok_or_else(|| anyhow!("未找到隧道 {original}"))?;
+        .ok_or_else(|| anyhow!(l10n::t(
+            format!("未找到隧道 {original}"),
+            format!("Tunnel {original} not found")
+        )))?;
     tbl["name"] = value(p.name.as_str());
     tbl["type"] = value(p.ptype.as_str());
     tbl["localIP"] = value(p.local_ip.as_str());
@@ -2238,7 +2478,10 @@ pub fn update_proxy(src: &str, original: &str, p: &NewProxy) -> Result<String> {
 
 pub fn read_config_file(t: &Target) -> Result<String> {
     std::fs::read_to_string(&t.config_path)
-        .with_context(|| format!("读取 {} 失败", t.config_path.display()))
+        .with_context(|| l10n::t(
+            format!("读取 {} 失败", t.config_path.display()),
+            format!("Failed to read {}", t.config_path.display()),
+        ))
 }
 
 // ---------- logs ----------
@@ -2248,18 +2491,27 @@ pub fn read_config_file(t: &Target) -> Result<String> {
 pub fn reveal_in_finder(path: &str) -> Result<()> {
     let p = path.trim();
     if p.is_empty() || !p.starts_with('/') {
-        bail!("只能在 Finder 里定位一个绝对路径");
+        bail!(l10n::t(
+            "只能在 Finder 里定位一个绝对路径",
+            "Only absolute paths can be revealed in Finder"
+        ));
     }
     if !Path::new(p).exists() {
-        bail!("该文件还不存在：{p}");
+        bail!(l10n::t(
+            format!("该文件还不存在：{p}"),
+            format!("File does not exist yet: {p}")
+        ));
     }
     let st = std::process::Command::new("open")
         .arg("-R")
         .arg(p)
         .status()
-        .context("调用 open 失败")?;
+        .context(l10n::t("调用 open 失败", "Failed to run open"))?;
     if !st.success() {
-        bail!("Finder 没能定位到该文件");
+        bail!(l10n::t(
+            "Finder 没能定位到该文件",
+            "Finder could not reveal the file"
+        ));
     }
     Ok(())
 }
@@ -2277,7 +2529,10 @@ pub struct LogPage {
 pub fn tail_page(path: &Path, offset: u64, size: u64) -> Result<LogPage> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)
-        .with_context(|| format!("打开日志 {} 失败", path.display()))?;
+        .with_context(|| l10n::t(
+            format!("打开日志 {} 失败", path.display()),
+            format!("Failed to open log {}", path.display()),
+        ))?;
     let len = f.metadata()?.len();
     let end = len.saturating_sub(offset);
     let win = end.saturating_sub(size);

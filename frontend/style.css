@@ -108,23 +108,27 @@ body {
 .gauge-k { font-size: 11px; color: var(--side-faint); }
 .gauge-v { font-size: 11.5px; color: #c3cede; font-weight: 600; font-variant-numeric: tabular-nums; }
 .side-foot { padding: 10px 6px 2px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
-.side-status { display: flex; align-items: center; gap: 8px; padding-top: 8px; font-size: 11px; }
-.ss-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #5b6a85; }
+/* 底部三行统一"左 icon + 右 label"，图标同宽同色对齐成一列；icon 与 label 间距一致 9px */
+.side-foot svg { flex: none; }
+.ss-ico { flex: none; display: inline-flex; color: var(--side-text); }
+.side-status { display: flex; align-items: center; gap: 9px; padding-top: 9px; font-size: 11px; }
+.ss-txt { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.ss-name { color: #e6ecf5; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-sep { color: var(--side-faint); flex: none; }
+.ss-sub { color: var(--side-text); font-size: 11px; white-space: nowrap; }
+/* 状态点紧跟在名字之后、时间之前；ss-txt 是 baseline 对齐，点用 align-self 居中 */
+.ss-dot { flex: none; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: #5b6a85; }
 .ss-dot.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .16); }
 .ss-dot.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, .16); }
-.ss-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ss-name { color: #e6ecf5; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
-.ss-sub { color: var(--side-faint); font-size: 10.5px; overflow-wrap: anywhere; }
-.side-motto { font-size: 10px; color: var(--side-faint); margin-top: 4px; }
 /* 侧边栏底部：本机 frpc 的版本与用量（这些只属于本机，别处不显示） */
-.side-metrics { display: flex; flex-direction: column; gap: 5px; padding-top: 8px; font-size: 11px; }
+.side-metrics { display: flex; flex-direction: column; gap: 5px; padding-top: 9px; font-size: 11px; }
 .side-metrics:empty { display: none; }
-.sm-ver { display: flex; align-items: center; gap: 6px; }
-.sm-k { color: var(--side-faint); }
-.sm-v { color: #d7e0ef; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sm-ver { display: flex; align-items: center; gap: 9px; }
+.sm-v { color: #d7e0ef; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sm-v.warn { color: #fbbf24; }
-.side-metrics .btn.ghost { color: #9fb0cc; }
-.side-metrics .btn.ghost:hover:not(:disabled) { background: var(--side-hover); color: #dfe8f6; }
+/* 语言切换入口：地球 + 目标语言名（中文界面显示 English，英文界面显示 中文），点击互切 */
+.side-lang { display: flex; align-items: center; gap: 9px; margin: 2px 0 0; padding: 0; border: 0; background: transparent; color: var(--side-text); font-size: 11.5px; cursor: pointer; }
+.side-lang:hover { color: #dfe8f6; }
 
 /* ---------- content ---------- */
 .content { flex: 1; display: flex; flex-direction: column; padding: 22px 26px; min-width: 0; }

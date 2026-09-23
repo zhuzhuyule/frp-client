@@ -13,36 +13,39 @@
       <div class="brand-tile">F</div>
       <div class="brand-text">
         <div class="brand-name">FRP Client</div>
-        <div class="brand-sub">轻量 · 高效 · 稳定</div>
+        <div class="brand-sub" data-i18n="brand.tagline">轻量 · 高效 · 稳定</div>
       </div>
     </div>
     <nav id="nav">
-      <div class="nav-item" data-page="tunnels"><span class="nav-glyph">⇄</span><span>隧道管理</span></div>
-      <div class="nav-item" data-page="config"><span class="nav-glyph">⚙</span><span>配置预览</span></div>
-      <div class="nav-item" data-page="ai"><span class="nav-glyph">✦</span><span>AI 编排</span></div>
-      <div class="nav-item" data-page="logs"><span class="nav-glyph">☰</span><span>日志</span></div>
+      <div class="nav-item" data-page="tunnels"><span class="nav-glyph">⇄</span><span data-i18n="nav.tunnels">隧道管理</span></div>
+      <div class="nav-item" data-page="config"><span class="nav-glyph">⚙</span><span data-i18n="nav.config">配置预览</span></div>
+      <div class="nav-item" data-page="ai"><span class="nav-glyph">✦</span><span data-i18n="nav.ai">AI 编排</span></div>
+      <div class="nav-item" data-page="logs"><span class="nav-glyph">☰</span><span data-i18n="nav.logs">日志</span></div>
     </nav>
     <div class="side-flex"></div>
     <div id="side-usage" class="side-usage"></div>
     <div class="side-foot">
-      <div id="side-status" class="side-status"><i class="ss-dot"></i><div class="ss-txt"><span class="ss-name">检测中…</span><span class="ss-sub">正在连接控制台</span></div></div>
+      <button id="btn-lang" class="side-lang" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3.5 9h17M3.5 15h17" /></svg>
+        <span class="lang-label">English</span>
+      </button>
+      <div id="side-status" class="side-status"><span class="ss-ico"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M9 20h6M12 16v4" /></svg></span><div class="ss-txt"><span class="ss-name" data-i18n="side.statusChecking">检测中…</span><span class="ss-sub" data-i18n="side.statusConnecting">正在连接控制台</span></div></div>
       <div id="side-metrics" class="side-metrics"></div>
-      <div class="side-motto">FRP Client · 让本地服务更容易被访问</div>
     </div>
   </aside>
 
   <main class="content">
     <header class="page-head">
       <div class="head-titles">
-        <h1 id="page-title">隧道管理</h1>
-        <p id="page-sub">管理本地服务映射并生成客户端配置</p>
+        <h1 id="page-title" data-i18n="nav.tunnels">隧道管理</h1>
+        <p id="page-sub" data-i18n="tunnels.pageSub">管理本地服务映射并生成客户端配置</p>
       </div>
       <div class="head-actions">
         <span class="ha ha-tunnels">
-          <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" placeholder="搜索名称、本地或映射地址..." /></span>
-          <button id="btn-refresh" class="btn square" title="刷新">⟳</button>
-          <button class="btn primary js-apply">保存</button>
-          <button id="btn-new" class="btn primary">+ 新建隧道</button>
+          <span class="search-wrap"><span class="search-ico">⌕</span><input id="search" class="search" type="text" data-i18n-ph="tunnels.searchPh" placeholder="搜索名称、本地或映射地址..." /></span>
+          <button id="btn-refresh" class="btn square" data-i18n-title="common.refresh">⟳</button>
+          <button class="btn primary js-apply" data-i18n="common.save">保存</button>
+          <button id="btn-new" class="btn primary" data-i18n="tunnels.newBtn">+ 新建隧道</button>
         </span>
       </div>
     </header>
@@ -54,24 +57,24 @@
         <div class="card table-card">
           <div class="table-top">
             <div class="chips">
-              <span id="chip-run" class="chip ok">● 运行中</span>
-              <span id="chip-cnt" class="chip">隧道 0 / 0</span>
+              <span id="chip-run" class="chip ok" data-i18n="tunnels.chipRunning">● 运行中</span>
+              <span id="chip-cnt" class="chip" data-i18n="tunnels.chipCount">隧道 0 / 0</span>
             </div>
             <div class="row gap" id="proc-btns">
-              <button id="btn-start" class="btn primary sm">启动</button>
-              <button id="btn-restart" class="btn sm">重启</button>
-              <button id="btn-stop" class="btn danger sm">停止</button>
+              <button id="btn-start" class="btn primary sm" data-i18n="common.start">启动</button>
+              <button id="btn-restart" class="btn sm" data-i18n="common.restart">重启</button>
+              <button id="btn-stop" class="btn danger sm" data-i18n="common.stop">停止</button>
             </div>
           </div>
           <div class="thead">
-            <span class="col-name">名称</span>
-            <span class="col-local">本地 / 后台进程</span>
-            <span class="col-remote">映射（域名优先）</span>
-            <span class="col-status">运行状态</span>
-            <span class="col-edit">操作</span>
+            <span class="col-name" data-i18n="common.name">名称</span>
+            <span class="col-local" data-i18n="tunnels.colLocal">本地 / 后台进程</span>
+            <span class="col-remote" data-i18n="tunnels.colRemote">映射（域名优先）</span>
+            <span class="col-status" data-i18n="tunnels.colStatus">运行状态</span>
+            <span class="col-edit" data-i18n="common.actions">操作</span>
           </div>
           <div id="tunnel-rows" class="rows"></div>
-          <div id="tunnel-empty" class="empty hidden">暂无隧道 · 管理 API 不可达或 frpc 未配置代理</div>
+          <div id="tunnel-empty" class="empty hidden" data-i18n="tunnels.empty">暂无隧道 · 管理 API 不可达或 frpc 未配置代理</div>
         </div>
       </div>
     </section>
@@ -85,30 +88,30 @@
           <div class="ov-grid">
             <div class="ov-sec">
               <div class="ov-sec-h">
-                <div class="card-title">这台设备的连接方式</div>
-                <div class="hint">App 这一侧怎么连它，改动不会落到设备上的 frpc。</div>
+                <div class="card-title" data-i18n="config.connTitle">这台设备的连接方式</div>
+                <div class="hint" data-i18n="config.connHint">App 这一侧怎么连它，改动不会落到设备上的 frpc。</div>
               </div>
-              <div class="kv"><span class="k">控制台</span><span id="i-ep" class="v"></span></div>
-              <div class="kv"><span class="k">账号</span><span id="i-ep-user" class="v"></span></div>
-              <div class="kv"><span class="k">进程</span><span id="i-ep-run" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kConsole">控制台</span><span id="i-ep" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kAccount">账号</span><span id="i-ep-user" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kProcess">进程</span><span id="i-ep-run" class="v"></span></div>
             </div>
             <div class="ov-sec">
               <div class="ov-sec-h">
-                <div class="card-title">这台 frpc 自身的配置</div>
-                <div class="hint">它连哪个 frps、控制台绑在哪 —— 改这里才会写进该目标的 frpc.toml。</div>
+                <div class="card-title" data-i18n="config.frpcTitle">这台 frpc 自身的配置</div>
+                <div class="hint" data-i18n="config.frpcHint">它连哪个 frps、控制台绑在哪 —— 改这里才会写进该目标的 frpc.toml。</div>
               </div>
-              <div class="kv"><span class="k">frps 服务端</span><span id="i-srv" class="v"></span></div>
-              <div class="kv"><span class="k">控制台绑定</span><span id="i-web-cfg" class="v"></span></div>
-              <div class="kv"><span class="k">隧道</span><span id="i-tc" class="v"></span></div>
-              <div class="kv"><span class="k">配置文件</span><span id="i-cfg" class="v"></span><button id="btn-reveal-cfg" class="btn xs" title="在 Finder 中定位这台设备的 frpc.toml">在 Finder 中显示</button></div>
-              <div class="kv"><span class="k">上次保存</span><span id="i-saved" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kServer">frps 服务端</span><span id="i-srv" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kConsoleBind">控制台绑定</span><span id="i-web-cfg" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kTunnels">隧道</span><span id="i-tc" class="v"></span></div>
+              <div class="kv"><span class="k" data-i18n="config.kCfgFile">配置文件</span><span id="i-cfg" class="v"></span><button id="btn-reveal-cfg" class="btn xs" data-i18n-title="config.revealCfgTitle" data-i18n="common.showInFinder">在 Finder 中显示</button></div>
+              <div class="kv"><span class="k" data-i18n="config.kLastSaved">上次保存</span><span id="i-saved" class="v"></span></div>
             </div>
           </div>
           <div class="row ov-foot">
             <span id="ov-foot-note" class="hint"></span>
             <span class="flex1"></span>
-            <button id="btn-edit-device" class="btn lg" title="改 App 怎么连这台设备的控制台（地址 / 端口 / 账号），不动设备上的 frpc">编辑设备连接</button>
-            <button id="btn-edit-server" class="btn primary lg" title="改这台 frpc 自己的配置（服务端、控制台绑定、隧道）">编辑设备配置</button>
+            <button id="btn-edit-device" class="btn lg" data-i18n-title="config.editDeviceTitle" data-i18n="config.editDeviceBtn">编辑设备连接</button>
+            <button id="btn-edit-server" class="btn primary lg" data-i18n-title="config.editCfgTitle" data-i18n="config.editCfgBtn">编辑设备配置</button>
           </div>
         </div>
       </div>
@@ -118,10 +121,10 @@
     <section id="page-ai" class="page col">
       <div class="card ai-sec">
         <div class="ai-sec-h">
-          <span class="ai-sec-t">模型配置</span>
-          <span class="hint">全局配置 · 对所有设备生效，点选一个用于生成（OpenAI 兼容 /chat/completions）</span>
+          <span class="ai-sec-t" data-i18n="ai.modelConfig">模型配置</span>
+          <span class="hint" data-i18n="ai.modelHint">全局配置 · 对所有设备生效，点选一个用于生成（OpenAI 兼容 /chat/completions）</span>
           <span class="flex1"></span>
-          <button id="btn-ai-add" class="btn sm">+ 添加模型配置</button>
+          <button id="btn-ai-add" class="btn sm" data-i18n="ai.addProfileBtn">+ 添加模型配置</button>
         </div>
         <div id="ai-profiles" class="ai-profiles"></div>
       </div>
@@ -129,21 +132,21 @@
         <div id="atabs" class="ttabs"></div>
         <div class="card ai-panel">
           <div class="ai-sec">
-            <div class="ai-sec-h"><span class="ai-sec-t">生成隧道草案</span><span id="ai-use-note" class="hint">草案不会自动写入，逐条确认后才加到当前设备</span></div>
-            <textarea id="ai-prompt" rows="3" placeholder="例如：把本机 8080 的 web 服务用 tcp 映射到远程 18080；再起一条 http 隧道，把 3000 挂到 app.example.com"></textarea>
+            <div class="ai-sec-h"><span class="ai-sec-t" data-i18n="ai.genTitle">生成隧道草案</span><span id="ai-use-note" class="hint" data-i18n="ai.useNote">草案不会自动写入，逐条确认后才加到当前设备</span></div>
+            <textarea id="ai-prompt" rows="3" data-i18n-ph="ai.promptPh" placeholder="例如：把本机 8080 的 web 服务用 tcp 映射到远程 18080；再起一条 http 隧道，把 3000 挂到 app.example.com"></textarea>
             <div class="ai-sec-foot">
-              <button id="btn-ai-clear" class="btn sm ghost hidden">清空草案</button>
+              <button id="btn-ai-clear" class="btn sm ghost hidden" data-i18n="ai.clearBtn">清空草案</button>
               <span class="flex1"></span>
-              <button id="btn-ai-apply-all" class="btn sm hidden">应用全部</button>
-              <button id="btn-ai-gen" class="btn sm primary">生成草案</button>
+              <button id="btn-ai-apply-all" class="btn sm hidden" data-i18n="ai.applyAllBtn">应用全部</button>
+              <button id="btn-ai-gen" class="btn sm primary" data-i18n="ai.genBtn">生成草案</button>
             </div>
           </div>
           <div class="thead hidden" id="ai-drafts-head">
-            <span class="col-name">名称</span>
-            <span class="col-local">本地</span>
-            <span class="col-remote">映射（FRP 地址）</span>
-            <span class="col-status">状态</span>
-            <span class="col-edit">操作</span>
+            <span class="col-name" data-i18n="common.name">名称</span>
+            <span class="col-local" data-i18n="ai.colLocal">本地</span>
+            <span class="col-remote" data-i18n="ai.colRemote">映射（FRP 地址）</span>
+            <span class="col-status" data-i18n="ai.colStatus">状态</span>
+            <span class="col-edit" data-i18n="common.actions">操作</span>
           </div>
           <div id="ai-drafts" class="ai-drafts"></div>
         </div>
@@ -153,16 +156,16 @@
     <!-- ============ 日志 ============ -->
     <section id="page-logs" class="page col">
       <div class="card logbar" id="log-local">
-        <button id="log-out" class="btn primary sm">运行日志</button>
-        <button id="log-err" class="btn sm">错误日志</button>
-        <button id="log-refresh" class="btn sm">刷新</button>
-        <button id="log-more" class="btn sm hidden" title="向上追加更早的一页日志">加载更早</button>
-        <button id="btn-reveal-log" class="btn sm" title="在 Finder 中定位当前这个日志文件">在 Finder 中显示</button>
+        <button id="log-out" class="btn primary sm" data-i18n="logs.runBtn">运行日志</button>
+        <button id="log-err" class="btn sm" data-i18n="logs.errBtn">错误日志</button>
+        <button id="log-refresh" class="btn sm" data-i18n="common.refresh">刷新</button>
+        <button id="log-more" class="btn sm hidden" data-i18n-title="logs.loadEarlierTitle" data-i18n="logs.loadEarlier">加载更早</button>
+        <button id="btn-reveal-log" class="btn sm" data-i18n-title="logs.revealTitle" data-i18n="common.showInFinder">在 Finder 中显示</button>
         <span id="log-path" class="flex1 right faint"></span>
       </div>
       <div class="card ai-card hidden" id="log-remote">
-        <div class="ai-title">远端目标不支持查看日志</div>
-        <div class="ai-sub">切换到本机目标查看日志，或 SSH 到目标机器上查看其 frpc 日志。</div>
+        <div class="ai-title" data-i18n="logs.remoteTitle">远端目标不支持查看日志</div>
+        <div class="ai-sub" data-i18n="logs.remoteSub">切换到本机目标查看日志，或 SSH 到目标机器上查看其 frpc 日志。</div>
       </div>
       <pre id="log-box" class="raw flex1"></pre>
     </section>
@@ -175,56 +178,56 @@
     <div class="modal-title" id="confirm-title"></div>
     <div class="modal-body" id="confirm-body"></div>
     <div class="modal-foot">
-      <button id="confirm-cancel" class="btn sm">取消</button>
-      <button id="confirm-ok" class="btn primary sm">确认</button>
+      <button id="confirm-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+      <button id="confirm-ok" class="btn primary sm" data-i18n="common.confirm">确认</button>
     </div>
   </div>
 </div>
 <div id="proxy-mask" class="mask hidden">
   <div class="modal wide">
-    <div class="modal-title" id="proxy-title">新建隧道</div>
+    <div class="modal-title" id="proxy-title" data-i18n="proxy.title">新建隧道</div>
     <div class="pgrid">
-      <label class="field"><span>名称<i class="f-key">name</i></span><input id="n-name" placeholder="my-tunnel" /></label>
-      <label class="field narrow"><span>类型<i class="f-key">type</i></span>
+      <label class="field"><span><span data-i18n="common.name">名称</span><i class="f-key">name</i></span><input id="n-name" placeholder="my-tunnel" /></label>
+      <label class="field narrow"><span><span data-i18n="proxy.type">类型</span><i class="f-key">type</i></span>
         <select id="n-type"><option>tcp</option><option>http</option><option>udp</option></select>
       </label>
-      <label class="field"><span>本地地址<i class="f-key">localIP</i></span><input id="n-local-ip" value="127.0.0.1" />
+      <label class="field"><span><span data-i18n="proxy.localIp">本地地址</span><i class="f-key">localIP</i></span><input id="n-local-ip" value="127.0.0.1" />
         <span class="presets" id="n-local-ip-presets"></span>
       </label>
-      <label class="field"><span>本地端口<i class="f-key">localPort</i></span><input id="n-local-port" placeholder="如 8080" />
+      <label class="field"><span><span data-i18n="proxy.localPort">本地端口</span><i class="f-key">localPort</i></span><input id="n-local-port" data-i18n-ph="proxy.localPortPh" placeholder="如 8080" />
         <span class="presets" id="n-local-port-presets"></span>
       </label>
-      <label class="field"><span>映射端口<i class="f-key">remotePort</i></span><input id="n-remote-port" placeholder="如 9090" />
+      <label class="field"><span><span data-i18n="proxy.remotePort">映射端口</span><i class="f-key">remotePort</i></span><input id="n-remote-port" data-i18n-ph="proxy.remotePortPh" placeholder="如 9090" />
         <span class="presets" id="n-remote-port-presets"></span>
         <span class="fhint" id="n-remote-hint"></span>
       </label>
-      <label class="field"><span>域名<i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" />
+      <label class="field"><span><span data-i18n="proxy.domain">域名</span><i class="f-key">customDomains</i></span><input id="n-domain" placeholder="a.example.com, b.example.com" />
         <span class="fhint" id="n-domain-hint"></span>
       </label>
     </div>
     <details class="adv" id="proxy-adv">
-      <summary>高级设置<i class="f-key">transport / healthCheck</i><span class="adv-tag hidden" id="proxy-adv-tag">已设置</span></summary>
+      <summary><span data-i18n="proxy.advSettings">高级设置</span><i class="f-key">transport / healthCheck</i><span class="adv-tag hidden" id="proxy-adv-tag" data-i18n="proxy.advSetTag">已设置</span></summary>
       <div class="pgrid">
-        <label class="field" title="transport.useEncryption"><span>链路加密<i class="f-key">useEncryption</i></span>
-          <select id="n-enc"><option value="">默认</option><option value="true">开启</option><option value="false">关闭</option></select>
+        <label class="field" title="transport.useEncryption"><span><span data-i18n="proxy.encryption">链路加密</span><i class="f-key">useEncryption</i></span>
+          <select id="n-enc"><option value="" data-i18n="common.optDefault">默认</option><option value="true" data-i18n="common.optOn">开启</option><option value="false" data-i18n="common.optOff">关闭</option></select>
         </label>
-        <label class="field" title="transport.useCompression"><span>数据压缩<i class="f-key">useCompression</i></span>
-          <select id="n-comp"><option value="">默认</option><option value="true">开启</option><option value="false">关闭</option></select>
+        <label class="field" title="transport.useCompression"><span><span data-i18n="proxy.compression">数据压缩</span><i class="f-key">useCompression</i></span>
+          <select id="n-comp"><option value="" data-i18n="common.optDefault">默认</option><option value="true" data-i18n="common.optOn">开启</option><option value="false" data-i18n="common.optOff">关闭</option></select>
         </label>
-        <label class="field" title="transport.bandwidthLimit"><span>带宽限制<i class="f-key">bandwidthLimit</i></span><input id="n-bw" placeholder="如 1MB" />
-          <span class="fhint">只认大写 KB / MB，留空为不限</span>
+        <label class="field" title="transport.bandwidthLimit"><span><span data-i18n="proxy.bandwidth">带宽限制</span><i class="f-key">bandwidthLimit</i></span><input id="n-bw" data-i18n-ph="proxy.bandwidthPh" placeholder="如 1MB" />
+          <span class="fhint" data-i18n="proxy.bwHint">只认大写 KB / MB，留空为不限</span>
         </label>
-        <label class="field" title="healthCheck.type"><span>健康检查<i class="f-key">healthCheck</i></span>
-          <select id="n-hc"><option value="">关闭</option><option value="tcp">tcp 探测</option></select>
+        <label class="field" title="healthCheck.type"><span><span data-i18n="proxy.healthCheck">健康检查</span><i class="f-key">healthCheck</i></span>
+          <select id="n-hc"><option value="" data-i18n="common.optOff">关闭</option><option value="tcp" data-i18n="proxy.tcpProbe">tcp 探测</option></select>
         </label>
-        <label class="field" title="healthCheck.intervalSeconds"><span>探测间隔（秒）<i class="f-key">intervalSeconds</i></span><input id="n-hc-int" placeholder="如 10" /></label>
-        <label class="field" title="healthCheck.maxFailed"><span>失败次数<i class="f-key">maxFailed</i></span><input id="n-hc-fail" placeholder="如 3" /></label>
+        <label class="field" title="healthCheck.intervalSeconds"><span><span data-i18n="proxy.hcInterval">探测间隔（秒）</span><i class="f-key">intervalSeconds</i></span><input id="n-hc-int" data-i18n-ph="proxy.hcIntervalPh" placeholder="如 10" /></label>
+        <label class="field" title="healthCheck.maxFailed"><span><span data-i18n="proxy.hcMaxFailed">失败次数</span><i class="f-key">maxFailed</i></span><input id="n-hc-fail" data-i18n-ph="proxy.hcMaxFailedPh" placeholder="如 3" /></label>
       </div>
     </details>
-    <div class="hint" id="proxy-hint">加入暂存列表后仍需点右上角的保存按钮写入当前目标</div>
+    <div class="hint" id="proxy-hint" data-i18n="proxy.hintDefault">加入暂存列表后仍需点右上角的保存按钮写入当前目标</div>
     <div class="modal-foot">
-      <button id="btn-add-cancel" class="btn sm">取消</button>
-      <button id="btn-add" class="btn primary sm">加入暂存</button>
+      <button id="btn-add-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+      <button id="btn-add" class="btn primary sm" data-i18n="proxy.stageBtn">加入暂存</button>
     </div>
   </div>
 </div>
@@ -232,51 +235,51 @@
   <div id="server-mask" class="mask hidden">
     <div class="modal wide">
       <div class="modal-title">
-        <span id="srv-title">编辑设备配置</span>
+        <span id="srv-title" data-i18n="config.editCfgBtn">编辑设备配置</span>
         <span class="flex1"></span>
-        <button id="btn-modal-reload" class="btn sm ghost" title="丢弃弹窗里的改动，重新读取当前配置">⟳ 重新加载</button>
-        <button id="btn-modal-close" class="btn icon sm" title="关闭">✕</button>
+        <button id="btn-modal-reload" class="btn sm ghost" data-i18n-title="server.reloadTitle" data-i18n="server.reloadBtn">⟳ 重新加载</button>
+        <button id="btn-modal-close" class="btn icon sm" data-i18n-title="common.close">✕</button>
       </div>
       <div class="mtabs" id="srv-tabs">
-        <button class="mtab active" data-tab="ui">可视化</button>
-        <button class="mtab" data-tab="raw">原始 TOML</button>
+        <button class="mtab active" data-tab="ui" data-i18n="server.tabUi">可视化</button>
+        <button class="mtab" data-tab="raw" data-i18n="server.tabRaw">原始 TOML</button>
       </div>
       <div id="srv-ui" class="mpane">
-        <div class="card-title">要连接的服务端（frps）</div>
+        <div class="card-title" data-i18n="server.frpsCard">要连接的服务端（frps）</div>
         <div class="pgrid">
-          <label class="field"><span>服务端地址<i class="f-key">serverAddr</i></span><input id="c-addr" /></label>
-          <label class="field narrow"><span>服务端端口<i class="f-key">serverPort</i></span><input id="c-port" />
+          <label class="field"><span><span data-i18n="server.addr">服务端地址</span><i class="f-key">serverAddr</i></span><input id="c-addr" /></label>
+          <label class="field narrow"><span><span data-i18n="server.port">服务端端口</span><i class="f-key">serverPort</i></span><input id="c-port" />
             <span class="presets" id="c-port-presets"></span>
           </label>
-          <label class="field wide"><span>访问令牌<i class="f-key">auth.token</i></span>
-            <span class="secret"><input id="c-token" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-token">显示</button></span>
+          <label class="field wide"><span><span data-i18n="server.token">访问令牌</span><i class="f-key">auth.token</i></span>
+            <span class="secret"><input id="c-token" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-token" data-i18n="common.show">显示</button></span>
           </label>
         </div>
-        <div class="card-title" style="margin-top:12px">这台 frpc 自己的控制台（webServer）</div>
+        <div class="card-title" style="margin-top:12px" data-i18n="server.webCard">这台 frpc 自己的控制台（webServer）</div>
         <div class="pgrid">
-          <label class="field" title="本机请填 127.0.0.1 等回环地址；填本机绑不到的地址会让下次重启直接失败"><span>控制台地址<i class="f-key">webServer.addr</i></span><input id="c-web-addr" />
+          <label class="field" data-i18n-title="server.webWarn" title="本机请填 127.0.0.1 等回环地址；填本机绑不到的地址会让下次重启直接失败"><span><span data-i18n="server.webAddr">控制台地址</span><i class="f-key">webServer.addr</i></span><input id="c-web-addr" />
             <span class="presets" id="c-web-addr-presets"></span>
           </label>
-          <label class="field narrow"><span>控制台端口<i class="f-key">webServer.port</i></span><input id="c-web-port" />
+          <label class="field narrow"><span><span data-i18n="server.webPort">控制台端口</span><i class="f-key">webServer.port</i></span><input id="c-web-port" />
             <span class="presets" id="c-web-port-presets"></span>
           </label>
-          <label class="field"><span>控制台账号<i class="f-key">webServer.user</i></span><input id="c-web-user" /></label>
-          <label class="field"><span>控制台密码<i class="f-key">webServer.password</i></span>
-            <span class="secret"><input id="c-web-pass" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-web-pass">显示</button></span>
+          <label class="field"><span><span data-i18n="server.webUser">控制台账号</span><i class="f-key">webServer.user</i></span><input id="c-web-user" /></label>
+          <label class="field"><span><span data-i18n="server.webPass">控制台密码</span><i class="f-key">webServer.password</i></span>
+            <span class="secret"><input id="c-web-pass" type="password" autocomplete="off" /><button type="button" class="eye" data-for="c-web-pass" data-i18n="common.show">显示</button></span>
           </label>
         </div>
-        <div class="hint warn">webServer 只在重启时重新绑定；写成本机绑不到的地址会让下次重启直接失败。</div>
+        <div class="hint warn" data-i18n="server.webWarn">webServer 只在重启时重新绑定；写成本机绑不到的地址会让下次重启直接失败。</div>
       </div>
       <div id="srv-raw" class="mpane hidden">
         <textarea id="c-raw" class="raw-edit" spellcheck="false"></textarea>
-        <div class="hint">整篇 frpc.toml，含尚未保存的隧道增删改。</div>
+        <div class="hint" data-i18n="server.rawHint">整篇 frpc.toml，含尚未保存的隧道增删改。</div>
       </div>
       <div class="modal-foot">
         <span class="foot-hint" id="srv-note"></span>
         <span class="flex1"></span>
-        <button id="btn-server-cancel" class="btn sm">取消</button>
-        <button id="btn-server-save" class="btn sm">保存</button>
-        <button id="btn-server-apply" class="btn primary sm">保存并热加载</button>
+        <button id="btn-server-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+        <button id="btn-server-save" class="btn sm" data-i18n="common.save">保存</button>
+        <button id="btn-server-apply" class="btn primary sm" data-i18n="server.applyBtn">保存并热加载</button>
       </div>
     </div>
   </div>
@@ -285,72 +288,72 @@
   <div id="device-mask" class="mask hidden">
     <div class="modal">
       <div class="modal-title">
-        <span id="dv-title">新建设备</span>
+        <span id="dv-title" data-i18n="device.titleNew">新建设备</span>
         <span class="flex1"></span>
-        <button id="btn-dv-close" class="btn icon sm" title="关闭">✕</button>
+        <button id="btn-dv-close" class="btn icon sm" data-i18n-title="common.close">✕</button>
       </div>
       <div class="mtabs" id="dv-kind">
-        <button class="mtab active" data-kind="remote">远端设备</button>
-        <button class="mtab" data-kind="local">本机 frpc 实例</button>
+        <button class="mtab active" data-kind="remote" data-i18n="device.tabRemote">远端设备</button>
+        <button class="mtab" data-kind="local" data-i18n="device.tabLocal">本机 frpc 实例</button>
       </div>
       <div class="pgrid">
-        <label class="field"><span>名称<i class="f-key">name</i></span><input id="d-name" placeholder="Mac Mini" /></label>
-        <label class="field" id="d-os-wrap"><span>机器类型<i class="f-key">os</i></span>
-          <select id="d-os"><option value="">自动/未知</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+        <label class="field"><span><span data-i18n="common.name">名称</span><i class="f-key">name</i></span><input id="d-name" placeholder="Mac Mini" /></label>
+        <label class="field" id="d-os-wrap"><span><span data-i18n="device.machineType">机器类型</span><i class="f-key">os</i></span>
+          <select id="d-os"><option value="" data-i18n="device.osAuto">自动/未知</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
         </label>
       </div>
       <div class="pgrid">
-        <label class="field"><span><i class="f-lbl" id="d-host-label">主机地址</i><i class="f-key" id="d-host-key">host</i></span><input id="d-host" placeholder="192.168.3.10" />
+        <label class="field"><span><i class="f-lbl" id="d-host-label" data-i18n="device.hostLabel">主机地址</i><i class="f-key" id="d-host-key">host</i></span><input id="d-host" placeholder="192.168.3.10" />
           <span class="presets" id="host-presets"></span>
         </label>
-        <label class="field"><span>控制台端口<i class="f-key">port</i></span><input id="d-port" placeholder="7400" />
+        <label class="field"><span><span data-i18n="server.webPort">控制台端口</span><i class="f-key">port</i></span><input id="d-port" placeholder="7400" />
           <span class="presets" id="port-presets"></span>
         </label>
       </div>
       <div class="pgrid">
-        <label class="field"><span>控制台账号<i class="f-key">user</i></span><input id="d-user" placeholder="admin" autocomplete="off" /></label>
-        <label class="field"><span>控制台密码<i class="f-key">password</i></span><input id="d-pass" type="password" placeholder="留空保持不变" autocomplete="new-password" /></label>
+        <label class="field"><span><span data-i18n="server.webUser">控制台账号</span><i class="f-key">user</i></span><input id="d-user" placeholder="admin" autocomplete="off" /></label>
+        <label class="field"><span><span data-i18n="server.webPass">控制台密码</span><i class="f-key">password</i></span><input id="d-pass" type="password" data-i18n-ph="device.passPh" placeholder="留空保持不变" autocomplete="new-password" /></label>
       </div>
       <div class="pgrid hidden" id="d-cfg-wrap">
-        <label class="field wide"><span>配置文件路径<i class="f-key">configPath</i></span><input id="d-cfg" placeholder="/opt/homebrew/etc/frpc/frpc.toml" /></label>
+        <label class="field wide"><span><span data-i18n="device.cfgPath">配置文件路径</span><i class="f-key">configPath</i></span><input id="d-cfg" placeholder="/opt/homebrew/etc/frpc/frpc.toml" /></label>
       </div>
       <div class="hint" id="dv-hint"></div>
       <div class="modal-foot">
-        <button id="btn-dv-remove" class="btn danger sm hidden">移除设备</button>
-        <button id="btn-dv-rescan" class="btn sm hidden">⟳ 重新扫描本机</button>
+        <button id="btn-dv-remove" class="btn danger sm hidden" data-i18n="device.removeBtn">移除设备</button>
+        <button id="btn-dv-rescan" class="btn sm hidden" data-i18n="device.rescanBtn">⟳ 重新扫描本机</button>
         <span class="flex1"></span>
-        <button id="btn-dv-cancel" class="btn sm">取消</button>
-        <button id="btn-dv-ok" class="btn primary sm">添加并测试</button>
+        <button id="btn-dv-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+        <button id="btn-dv-ok" class="btn primary sm" data-i18n="device.addTestBtn">添加并测试</button>
       </div>
     </div>
   </div>
 <div id="ai-mask" class="mask hidden">
   <div class="modal">
-    <div class="modal-title" id="ai-modal-title">添加模型配置</div>
+    <div class="modal-title" id="ai-modal-title" data-i18n="aiModal.title">添加模型配置</div>
     <div class="pgrid">
-      <label class="field wide"><span>配置名称<i class="f-key">name</i></span><input id="ai-f-name" placeholder="如 DeepSeek / 本地 Ollama" /></label>
-      <label class="field wide"><span>API 地址<i class="f-key">base_url</i></span><input id="ai-f-base" placeholder="https://api.openai.com/v1" />
+      <label class="field wide"><span><span data-i18n="aiModal.name">配置名称</span><i class="f-key">name</i></span><input id="ai-f-name" data-i18n-ph="aiModal.namePh" placeholder="如 DeepSeek / 本地 Ollama" /></label>
+      <label class="field wide"><span><span data-i18n="aiModal.base">API 地址</span><i class="f-key">base_url</i></span><input id="ai-f-base" placeholder="https://api.openai.com/v1" />
         <div class="presets" id="ai-providers"></div>
       </label>
-      <label class="field"><span>API Key<i class="f-key">api_key</i></span><input id="ai-f-key" type="password" placeholder="只存本机 app.toml" /></label>
-      <label class="field"><span>模型<i class="f-key">model</i></span>
+      <label class="field"><span>API Key<i class="f-key">api_key</i></span><input id="ai-f-key" type="password" data-i18n-ph="aiModal.keyPh" placeholder="只存本机 app.toml" /></label>
+      <label class="field"><span><span data-i18n="aiModal.model">模型</span><i class="f-key">model</i></span>
         <div class="ac-wrap">
-          <input id="ai-f-model" autocomplete="off" placeholder="先测连接再从列表选，也可手填" />
+          <input id="ai-f-model" autocomplete="off" data-i18n-ph="aiModal.modelPh" placeholder="先测连接再从列表选，也可手填" />
           <div id="ai-model-list" class="ac-list hidden"></div>
         </div>
       </label>
       <div class="field wide ai-test-row">
-        <button id="btn-ai-test" class="btn sm">测试连接并加载模型</button>
-        <span id="ai-test-note" class="hint">用上面的地址和 Key 请求 /models，通了会自动出模型列表</span>
+        <button id="btn-ai-test" class="btn sm" data-i18n="aiModal.testBtn">测试连接并加载模型</button>
+        <span id="ai-test-note" class="hint" data-i18n="aiModal.testNote">用上面的地址和 Key 请求 /models，通了会自动出模型列表</span>
       </div>
     </div>
     <div class="modal-foot">
       <span class="flex1"></span>
-      <button id="btn-ai-cancel" class="btn sm">取消</button>
-      <button id="btn-ai-ok" class="btn primary sm">保存</button>
+      <button id="btn-ai-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+      <button id="btn-ai-ok" class="btn primary sm" data-i18n="common.save">保存</button>
     </div>
   </div>
 </div>
-<script src="app.js"></script>
+<script src="i18n.js"></script>
 </body>
 </html>

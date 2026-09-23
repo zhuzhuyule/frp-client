@@ -39,21 +39,21 @@ const state = {
 };
 
 const PAGE_META = {
-  tunnels: ["隧道管理", "查看隧道与本机进程 · 直接增删映射"],
-  config: ["配置预览", "这台设备的连接方式与它自己的配置 · 点右下角进入编辑"],
-  ai: ["AI 编排", "自然语言生成隧道草案 · 逐条确认后应用到当前设备"],
-  logs: ["日志", "查看 frpc 标准输出 / 标准错误日志"],
+  tunnels: [tx("隧道管理", "Tunnel Manager"), tx("查看隧道与本机进程 · 直接增删映射", "View tunnels and the local process · add or remove mappings directly")],
+  config: [tx("配置预览", "Config Preview"), tx("这台设备的连接方式与它自己的配置 · 点右下角进入编辑", "How this device connects and its own config · edit via the button at the bottom right")],
+  ai: [tx("AI 编排", "AI Orchestration"), tx("自然语言生成隧道草案 · 逐条确认后应用到当前设备", "Generate tunnel drafts from natural language · confirm and apply one by one")],
+  logs: [tx("日志", "Logs"), tx("查看 frpc 标准输出 / 标准错误日志", "View frpc stdout / stderr logs")],
 };
 
 function typeCls(t) {
   return t === "tcp" || t === "http" || t === "udp" ? t : "other";
 }
 function typeDesc(t) {
-  return t === "tcp" ? "TCP 端口映射" : t === "http" ? "HTTP 域名映射" : t === "udp" ? "UDP 转发" : "frpc 代理";
+  return t === "tcp" ? tx("TCP 端口映射", "TCP port mapping") : t === "http" ? tx("HTTP 域名映射", "HTTP domain mapping") : t === "udp" ? tx("UDP 转发", "UDP forwarding") : tx("frpc 代理", "frpc proxy");
 }
 /* 类型标签：TCP / HTTP / UDP 本身已经说明是端口映射还是域名映射，行里不再重复一句描述 */
 function typeTag(t) {
-  return ({ tcp: "TCP", http: "HTTP", udp: "UDP" })[t] || String(t || "其它").toUpperCase();
+  return ({ tcp: "TCP", http: "HTTP", udp: "UDP" })[t] || String(t || tx("其它", "Other")).toUpperCase();
 }
 function esc(s) {
   return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -199,9 +199,9 @@ async function loadTargets(gen = state.loadGen) {
       const miss = t.list.filter((x) => x.kind === "local" && x.needCreds);
       if (miss.length) {
         state.promptedCreds = true;
-        toast(`「${miss[0].name}」还缺控制台凭据，选中它后点底部「编辑设备连接」补全，之后才能读到状态`, "info");
+        toast(tx(`「${miss[0].name}」还缺控制台凭据，选中它后点底部「编辑设备连接」补全，之后才能读到状态`, `"${miss[0].name}" is missing console credentials. Select it, then use "Edit device connection" at the bottom to complete them before its status can be read`), "info");
       }
-      if (!t.list.length) toast("还没有任何设备，点标签行的「＋ 新建设备」", "info");
+      if (!t.list.length) toast(tx("还没有任何设备，点标签行的「＋ 新建设备」", "No devices yet — use \"+ New device\" in the tab row"), "info");
     }
   }
 }
@@ -225,7 +225,7 @@ async function probeTargets() {
 
 function tabsHtml() {
   const { activeId, list } = state.targets;
-  const add = `<div class="ttab tt-add" title="新建设备"><span class="tt-plus">＋</span><span class="tt-label">新建设备</span></div>`;
+  const add = `<div class="ttab tt-add" title="${tx("新建设备", "New device")}"><span class="tt-plus">＋</span><span class="tt-label">${tx("新建设备", "New device")}</span></div>`;
   if (!list.length) return add;
   return list
     .map((x) => {
@@ -234,7 +234,7 @@ function tabsHtml() {
       // 所有设备都上色，不只当前一台：绿=控制台连通、黄=连通但有隧道不在跑或报错、红=连不通
       const p = state.probe[x.id];
       const dot = !p ? "" : p.ok ? (p.bad ? "warn" : "run") : "off";
-      const tip = !p ? "正在探测这台设备" : p.ok ? (p.bad ? `${p.bad} 条隧道异常` : "控制台连通，隧道正常") : "控制台连不通";
+      const tip = !p ? tx("正在探测这台设备", "Probing this device") : p.ok ? (p.bad ? tx(`${p.bad} 条隧道异常`, `${p.bad} tunnel(s) with issues`) : tx("控制台连通，隧道正常", "Console reachable, tunnels healthy")) : tx("控制台连不通", "Console unreachable");
       return `<div class="ttab ${isActive ? "active" : ""}" data-kind="${x.kind}" data-id="${esc(x.id)}" title="${esc(x.host)}${x.port ? ":" + x.port : ""}${x.kind === "local" ? " · " + esc(x.id) : ""}">
         ${glyph ? `<span class="tt-os">${glyph}</span>` : ""}<span class="tt-dot ${dot}" title="${tip}"></span><span class="tt-label">${esc(x.name)}</span>
       </div>`;
@@ -277,7 +277,7 @@ function bindTabs(el) {
       if (id === state.targets.activeId) return;
       // 设备 tab 是 div，吃不到 setBusy 的 disabled，写入过程中先挡一下
       if (state.busy) {
-        toast("上一步还没结束，稍等再切设备", "info");
+        toast(tx("上一步还没结束，稍等再切设备", "Previous action still running — wait before switching devices"), "info");
         return;
       }
       // 点下去就立刻生效：乐观换掉活动设备并重绘页签，不等后端一个来回
@@ -307,7 +307,7 @@ function applyMode() {
   $("proc-btns").classList.toggle("hidden", remote);
   const apply = document.querySelectorAll(".js-apply");
   apply.forEach((b) => {
-    b.textContent = remote ? "保存并热加载" : "保存并重启 frpc";
+    b.textContent = remote ? tx("保存并热加载", "Save & hot-reload") : tx("保存并重启 frpc", "Save & restart frpc");
     b.disabled = state.busy;
   });
   $("log-local").classList.toggle("hidden", remote);
@@ -319,7 +319,7 @@ function applyMode() {
 function openDeviceModal(id) {
   const x = id ? state.targets.list.find((y) => y.id === id) : null;
   state.dev = { kind: x ? x.kind : "remote", editing: x ? x.id : "" };
-  $("dv-title").textContent = x ? `编辑设备连接 · ${x.name}` : "新建设备";
+  $("dv-title").textContent = x ? tx(`编辑设备连接 · ${x.name}`, `Edit device connection · ${x.name}`) : tx("新建设备", "New device");
   $("d-name").value = x ? x.name : "";
   $("d-host").value = x ? x.host : "";
   $("d-port").value = x ? String(x.port || "") : "";
@@ -338,7 +338,7 @@ function styleDeviceModal() {
   document.querySelectorAll("#dv-kind .mtab").forEach((b) =>
     b.classList.toggle("active", b.dataset.kind === kind)
   );
-  $("d-host-label").textContent = kind === "local" ? "本机地址" : "主机地址";
+  $("d-host-label").textContent = kind === "local" ? tx("本机地址", "Local address") : tx("主机地址", "Host address");
   // app.toml 里本机段用的是 addr，远端段用的是 host
   $("d-host-key").textContent = kind === "local" ? "addr" : "host";
   $("d-host").placeholder = kind === "local" ? "127.0.0.1" : "192.168.3.10";
@@ -349,13 +349,16 @@ function styleDeviceModal() {
   $("d-cfg").disabled = !!editing;
   $("btn-dv-remove").classList.toggle("hidden", !editing);
   $("btn-dv-rescan").classList.toggle("hidden", kind !== "local");
-  $("btn-dv-ok").textContent = editing ? "保存并测试" : "添加并测试";
+  $("btn-dv-ok").textContent = editing ? tx("保存并测试", "Save & test") : tx("添加并测试", "Add & test");
   renderPresets();
   $("dv-hint").textContent = kind === "local"
-    ? "本机实例通常由「重新扫描本机」从运行中的 frpc 进程参数里自动识别；手动填用于 App 读不到进程的情况。凭据存放在 ~/.config/frp-client/app.toml（0600）。"
+    ? tx("本机实例通常由「重新扫描本机」从运行中的 frpc 进程参数里自动识别；手动填用于 App 读不到进程的情况。凭据存放在 ~/.config/frp-client/app.toml（0600）。",
+         "Local instances are usually detected by \"Rescan local\" from running frpc process arguments; fill this in manually when the app can't see the process. Credentials are stored in ~/.config/frp-client/app.toml (0600).")
     : editing
-      ? "这里改的是 App 怎么连这台设备，不会动它自己的 frpc 配置；密码留空表示沿用原值。保存前会先测一次连通。"
-      : "frpc 的 API 不返回系统信息，机器类型只是展示用的图标；远端可以读取状态与热加载配置，不能控制进程。";
+      ? tx("这里改的是 App 怎么连这台设备，不会动它自己的 frpc 配置；密码留空表示沿用原值。保存前会先测一次连通。",
+           "This changes how the app connects to this device; its own frpc config is untouched. Leave the password blank to keep the current one. Connectivity is tested before saving.")
+      : tx("frpc 的 API 不返回系统信息，机器类型只是展示用的图标；远端可以读取状态与热加载配置，不能控制进程。",
+           "The frpc API doesn't report system info; machine type is just a display icon. Remote devices allow status reads and hot-reload, but not process control.");
 }
 
 function closeDeviceModal() {
@@ -428,7 +431,7 @@ function styleAdv() {
   ["n-enc", "n-comp"].forEach((id) => {
     const off = $(id).querySelector('option[value="false"]');
     off.disabled = !!state.storeMode;
-    off.textContent = state.storeMode ? "关闭（store 不支持）" : "关闭";
+    off.textContent = state.storeMode ? tx("关闭（store 不支持）", "Off (not supported with store)") : tx("关闭", "Off");
   });
 }
 
@@ -467,20 +470,20 @@ async function submitDevice() {
   const user = $("d-user").value.trim();
   const password = $("d-pass").value;
   if (!name) {
-    toast("名称不能为空", "err");
+    toast(tx("名称不能为空", "Name is required"), "err");
     return;
   }
   let note;
   if (kind === "local") {
     const configPath = editing || $("d-cfg").value.trim();
     if (!configPath) {
-      toast("配置文件路径不能为空", "err");
+      toast(tx("配置文件路径不能为空", "Config file path is required"), "err");
       return;
     }
     note = await call("add_local", { configPath, name, addr: host, port, user, password });
   } else {
     if (!host) {
-      toast("主机地址不能为空", "err");
+      toast(tx("主机地址不能为空", "Host address is required"), "err");
       return;
     }
     const args = { name, host, port: port || "7400", user, password, os: $("d-os").value };
@@ -496,11 +499,13 @@ async function removeDevice() {
   const { kind, editing } = state.dev;
   if (!editing) return;
   const ok = await showConfirm(
-    "移除该设备？",
+    tx("移除该设备？", "Remove this device?"),
     kind === "local"
-      ? "只会删除 App 里对这台本机实例的标注；若它仍在运行或被 LaunchAgent 监督，重新扫描后会再出现。"
-      : `将从 App 中移除「${editing}」及其存放的凭据，不会影响设备上的 frpc。`,
-    "移除"
+      ? tx("只会删除 App 里对这台本机实例的标注；若它仍在运行或被 LaunchAgent 监督，重新扫描后会再出现。",
+           "This only removes the app's annotation for this local instance; if it's still running or supervised by LaunchAgent, a rescan will bring it back.")
+      : tx(`将从 App 中移除「${editing}」及其存放的凭据，不会影响设备上的 frpc。`,
+           `Removes "${editing}" and its stored credentials from the app. The frpc on the device is unaffected.`),
+    tx("移除", "Remove")
   );
   if (!ok) return;
   const note = await call(kind === "local" ? "remove_local" : "remove_target", kind === "local" ? { id: editing } : { name: editing });
@@ -570,17 +575,23 @@ function showSkeletons() {
 /* 骨架屏期间屏上挂的还是上一台设备的数据，别让人拿它去写当前目标 */
 function loadingGuard() {
   if (!state.loading) return false;
-  toast("这台设备的数据还没到，稍等一下", "info");
+  toast(tx("这台设备的数据还没到，稍等一下", "Data for this device hasn't arrived yet — one moment"), "info");
   return true;
 }
 
-/* 状态点：控制台连得上给绿点，连不上给红点
-   sub 只放本机 frpc 的运行时长；其它情况留空，侧栏不重复页签上已经有的信息 */
+/* 侧边栏底部统一"左 icon + 右 label"风格的小图标集（stroke 走 currentColor，跟文字同色） */
+const SIDE_ICONS = {
+  monitor: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M9 20h6M12 16v4" /></svg>',
+  tag: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20.6 13.2 13.2 20.6a2 2 0 0 1-2.8 0L3.4 13.6a2 2 0 0 1-.6-1.4V4.4A1 1 0 0 1 3.8 3.4h7.8a2 2 0 0 1 1.4.6l7.6 7.6a2 2 0 0 1 0 1.6Z" /><circle cx="8" cy="8" r="1.4" /></svg>',
+};
+
+/* 本机状态行：电脑图标 + "名字 ● 运行时长"，绿/红点紧跟在名字之后，时间在其后 */
 function renderSideStatus(name, sub, up) {
   const el = $("side-status");
-  el.innerHTML = `<i class="ss-dot${up ? " on" : " off"}"></i>`
+  el.innerHTML = `<span class="ss-ico">${SIDE_ICONS.monitor}</span>`
     + `<div class="ss-txt"><span class="ss-name">${esc(name)}</span>`
-    + (sub ? `<span class="ss-sub">${esc(sub)}</span>` : "") + `</div>`;
+    + `<i class="ss-dot${up ? " on" : " off"}"></i>`
+    + (sub ? `<span class="ss-sep">·</span><span class="ss-sub">${esc(sub)}</span>` : "") + `</div>`;
 }
 
 /* ---------- 侧边栏分割线上方：本机 frpc 的 CPU / 内存占用环 ---------- */
@@ -603,8 +614,8 @@ function renderSideUsage(s) {
   const box = $("side-usage");
   const st = s && s.mode === "local" ? s.procStats : null;
   box.innerHTML = st
-    ? ring(st.cpuPct, "CPU 占用", `${st.cpuPct}%`, "frpc 进程的 CPU 占用，100% = 跑满一个核心")
-      + ring(st.memPct, "内存占用", `${st.rssMb} MB`, `frpc 常驻内存 ${st.rssMb}MB，占整机内存 ${st.memPct}%`)
+    ? ring(st.cpuPct, tx("CPU 占用", "CPU"), `${st.cpuPct}%`, tx("frpc 进程的 CPU 占用，100% = 跑满一个核心", "CPU usage of the frpc process; 100% = one full core"))
+      + ring(st.memPct, tx("内存占用", "Memory"), `${st.rssMb} MB`, tx(`frpc 常驻内存 ${st.rssMb}MB，占整机内存 ${st.memPct}%`, `frpc resident memory ${st.rssMb}MB, ${st.memPct}% of total RAM`))
     : "";
 }
 
@@ -621,13 +632,13 @@ function renderSideMetrics(s) {
   }
   const L = state.latest;
   const updatable = !!(L && !versionAtLeast(ver, L.version));
-  let tip = !L ? "联网查 GitHub 上的最新版"
-    : updatable ? `可更新到 ${L.version} · ${L.at} 检查过`
-    : `${L.at} 检查过，已是最新`;
-  if (st.upgraded) tip = "磁盘上的二进制已更新，重启 frpc 后才生效";
-  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="sm-k">frpc</span>`
+  let tip = !L ? tx("联网查 GitHub 上的最新版", "Check GitHub for the latest release")
+    : updatable ? tx(`可更新到 ${L.version} · ${L.at} 检查过`, `Update to ${L.version} available · checked at ${L.at}`)
+    : tx(`${L.at} 检查过，已是最新`, `Checked at ${L.at}, up to date`);
+  if (st.upgraded) tip = tx("磁盘上的二进制已更新，重启 frpc 后才生效", "Binary on disk updated — restart frpc for it to take effect");
+  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="ss-ico">${SIDE_ICONS.tag}</span>`
     + `<span class="sm-v${updatable || st.upgraded ? " warn" : ""}">${esc(ver)}</span>`
-    + `<button id="btn-update" class="btn xs ghost" title="${esc(tip)}">检查更新</button>`
+    + `<button id="btn-update" class="btn xs primary" title="${esc(tip)}">${tx("检查更新", "Check update")}</button>`
     + `</div>`;
   const btn = $("btn-update");
   if (btn) btn.addEventListener("click", checkUpdate);
@@ -641,7 +652,7 @@ async function checkUpdate() {
   const btn = $("btn-update");
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "检查中…";
+    btn.textContent = tx("检查中…", "Checking…");
   }
   const r = await call("check_update", { current: (st && st.binVersion) || "" });
   checkingUpdate = false;
@@ -651,7 +662,9 @@ async function checkUpdate() {
   }
   state.latest = { version: r.version, at: nowHM() };
   toast(
-    r.hasUpdate ? `frp 有新版 ${r.version}（当前 ${r.current || "未知"}）` : `已是最新 ${r.version}`,
+    r.hasUpdate
+      ? tx(`frp 有新版 ${r.version}（当前 ${r.current || "未知"}）`, `New frp version ${r.version} (current: ${r.current || "unknown"})`)
+      : tx(`已是最新 ${r.version}`, `Up to date: ${r.version}`),
     r.hasUpdate ? "info" : "ok"
   );
   renderSideMetrics(state.status);
@@ -667,13 +680,13 @@ async function refreshStatus(quiet) {
     if (gen !== state.loadGen) return; // 已经切走，旧目标的报错不用演
     state.status = null;
     state.loading = false;
-    renderSideStatus("未识别到目标", "", false);
+    renderSideStatus(tx("未识别到目标", "No target detected"), "", false);
     $("tunnel-rows").innerHTML = "";
     renderSideMetrics(null);
     renderSideUsage(null);
     renderTargetTabs();
     renderConfigOverview();
-    if (!quiet) toast(`状态获取失败：${e}`, "err");
+    if (!quiet) toast(tx(`状态获取失败：${e}`, `Status check failed: ${e}`), "err");
     return;
   }
   if (gen !== state.loadGen) return; // 结果属于旧目标，丢弃
@@ -700,11 +713,11 @@ function renderOverview(s) {
   if (!s) return;
   state.storeMode = !!s.storeMode;
   const run = $("chip-run");
-  run.textContent = s.running ? `● 运行中 · ${s.runningCount} / ${s.proxyCount} 条隧道` : "● frpc 不可达";
+  run.textContent = s.running ? tx(`● 运行中 · ${s.runningCount} / ${s.proxyCount} 条隧道`, `● Running · ${s.runningCount} / ${s.proxyCount} tunnels`) : tx("● frpc 不可达", "● frpc unreachable");
   run.className = "chip " + (s.running ? "ok" : "bad");
   const cnt = $("chip-cnt");
   cnt.className = "chip";
-  cnt.textContent = `共 ${s.proxyCount} 条 · API ${s.apiReachable ? "可达" : "不可达"}`;
+  cnt.textContent = tx(`共 ${s.proxyCount} 条 · API ${s.apiReachable ? "可达" : "不可达"}`, `${s.proxyCount} total · API ${s.apiReachable ? "reachable" : "unreachable"}`);
   $("btn-start").disabled = s.running || state.busy;
   $("btn-stop").disabled = !s.running || state.busy;
 }
@@ -731,7 +744,7 @@ function remoteLines(p) {
   const port = (addr.match(/:(\d+)$/) || [])[1] || String(p.remotePort || "").trim();
   // 最多两行：域名多了收进「+N 个域名」，完整列表挂在 title 上，行高不会被撑开
   if (doms.length) {
-    if (doms.length > 1) return [doms[0], `+${doms.length - 1} 个域名`];
+    if (doms.length > 1) return [doms[0], tx(`+${doms.length - 1} 个域名`, `+${doms.length - 1} domains`)];
     return port ? [doms[0], ":" + port] : [doms[0]];
   }
   if (addr) return [addr];
@@ -746,8 +759,8 @@ function renderTunnels() {
   emptyEl.classList.toggle("hidden", rows.length > 0);
   // 文案跟着当前状态走，别把上一次「没有设备」的话术留给「有设备但连不上」
   emptyEl.textContent = hasTarget
-    ? "暂无隧道 · 管理 API 不可达或 frpc 未配置代理"
-    : "未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端";
+    ? tx("暂无隧道 · 管理 API 不可达或 frpc 未配置代理", "No tunnels · admin API unreachable or frpc has no proxies configured")
+    : tx("未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端", "No devices detected · use \"+ New device\" in the tab row to scan local instances or add a remote");
   if (s) renderOverview(s);
   const box = $("tunnel-rows");
   box.innerHTML = rows
@@ -759,17 +772,17 @@ function renderTunnels() {
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
-          <div class="t-name"><b title="${esc(p.name)}">${esc(p.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(p.ptype))}">${esc(typeTag(p.ptype))}</i>${p.source === "store" ? '<i class="tag live" title="改动直接生效，不写配置文件">实时</i>' : ""}${p.err ? '<i class="tag err err-link" title="点击查看日志排查">存在错误</i>' : ""}</span></div>
+          <div class="t-name"><b title="${esc(p.name)}">${esc(p.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(p.ptype))}">${esc(typeTag(p.ptype))}</i>${p.source === "store" ? `<i class="tag live" title="${tx("改动直接生效，不写配置文件", "Takes effect immediately, not written to config file")}">${tx("实时", "Live")}</i>` : ""}${p.err ? `<i class="tag err err-link" title="${tx("点击查看日志排查", "Click to view logs to investigate")}">${tx("存在错误", "Has error")}</i>` : ""}</span></div>
         </div>
         <div class="col-local t-two">
           <span>${esc(p.localAddr || "—")}</span>
           ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid}">${esc(svc.name)}</i>` : ""}
         </div>
         <div class="col-remote t-two" title="${esc((p.domains || "").trim() || (p.remoteAddr || "").trim())}">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
-        <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? "运行中" : esc(p.status)}</span></span>
+        <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? tx("运行中", "Running") : esc(p.status)}</span></span>
         <span class="col-edit">
-          <button class="btn icon edit" data-name="${esc(p.name)}" title="编辑该隧道">${ICO_EDIT}</button>
-          <button class="btn icon danger del" data-name="${esc(p.name)}" title="删除该隧道">${ICO_DEL}</button>
+          <button class="btn icon edit" data-name="${esc(p.name)}" title="${tx("编辑该隧道", "Edit this tunnel")}">${ICO_EDIT}</button>
+          <button class="btn icon danger del" data-name="${esc(p.name)}" title="${tx("删除该隧道", "Delete this tunnel")}">${ICO_DEL}</button>
         </span>
       </div>`;
     })
@@ -783,11 +796,11 @@ function renderTunnels() {
   box.querySelectorAll(".err-link").forEach((el) =>
     el.addEventListener("click", () => {
       if (isRemote()) {
-        toast("远端不支持查看日志，请 SSH 到目标机排查", "info");
+        toast(tx("远端不支持查看日志，请 SSH 到目标机排查", "Logs aren't available for remote devices — SSH into the target to investigate"), "info");
         return;
       }
       showPage("logs");
-      toast("已跳到日志页，可切换 stdout / stderr 排查该报错", "info");
+      toast(tx("已跳到日志页，可切换 stdout / stderr 排查该报错", "Jumped to the logs page — switch between stdout / stderr to investigate this error"), "info");
     })
   );
 }
@@ -795,11 +808,11 @@ function renderTunnels() {
 async function deleteProxy(name) {
   const live = isLiveEntry(name);
   const ok = await showConfirm(
-    "删除隧道？",
+    tx("删除隧道？", "Delete this tunnel?"),
     live
-      ? `将立即从当前 frpc 中移除「${name}」并停止这条映射，无需重启。`
-      : `将从暂存配置中移除「${name}」，点右上角的保存按钮后落地。`,
-    "删除"
+      ? tx(`将立即从当前 frpc 中移除「${name}」并停止这条映射，无需重启。`, `Removes "${name}" from the running frpc immediately and stops this mapping. No restart needed.`)
+      : tx(`将从暂存配置中移除「${name}」，点右上角的保存按钮后落地。`, `Removes "${name}" from the staged config; it lands once you press Save at the top right.`),
+    tx("删除", "Delete")
   );
   if (!ok) return;
   await withBusy(async () => {
@@ -808,7 +821,7 @@ async function deleteProxy(name) {
     await loadConfig();
     if (!live) setDirty(true);
     await refreshStatus();
-    toast(typeof res === "string" ? res : `已移除「${name}」`, "info");
+    toast(typeof res === "string" ? res : tx(`已移除「${name}」`, `Removed "${name}"`), "info");
   });
 }
 
@@ -836,9 +849,10 @@ document.querySelectorAll(".js-apply").forEach((b) =>
     const remote = isRemote();
     if (!remote) {
       const ok = await showConfirm(
-        "保存并重启 frpc？",
-        "写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
-        "确认重启"
+        tx("保存并重启 frpc？", "Save and restart frpc?"),
+        tx("写入配置并重启会短暂中断当前所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
+           "Writing the config and restarting briefly interrupts all tunnels (~1-3s). If the new config fails to start, it rolls back automatically to the pre-save backup."),
+        tx("确认重启", "Restart")
       );
       if (ok) applyStaged(true);
       return;
@@ -847,7 +861,7 @@ document.querySelectorAll(".js-apply").forEach((b) =>
   })
 );
 
-function showConfirm(title, body, okLabel = "确认") {
+function showConfirm(title, body, okLabel = tx("确认", "OK")) {
   $("confirm-title").textContent = title;
   $("confirm-body").textContent = body;
   $("confirm-ok").textContent = okLabel;
@@ -882,14 +896,14 @@ function fmtEtime(e) {
   const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(e || "");
   if (!m) return e || "";
   const sec = +m[4] + +m[3] * 60 + (m[2] ? +m[2] * 3600 : 0) + (+m[1] || 0) * 86400;
-  if (sec >= 86400) return `${Math.floor(sec / 86400)} 天 ${Math.floor((sec % 86400) / 3600)} 小时`;
-  if (sec >= 3600) return `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分`;
-  if (sec >= 60) return `${Math.floor(sec / 60)} 分`;
-  return `${sec} 秒`;
+  if (sec >= 86400) return tx(`${Math.floor(sec / 86400)} 天 ${Math.floor((sec % 86400) / 3600)} 小时`, `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`);
+  if (sec >= 3600) return tx(`${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分`, `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`);
+  if (sec >= 60) return tx(`${Math.floor(sec / 60)} 分`, `${Math.floor(sec / 60)}m`);
+  return tx(`${sec} 秒`, `${sec}s`);
 }
 
 function statusStrip(t, s) {
-  if (!t) return `<span class="faint">还没有设备，点标签行的「＋ 新建设备」</span>`;
+  if (!t) return `<span class="faint">${tx("还没有设备，点标签行的「＋ 新建设备」", "No devices yet — use \"+ New device\" in the tab row")}</span>`;
   const local = t.kind === "local";
   const live = !!s && s.apiReachable;
   const stats = s && s.procStats;
@@ -899,17 +913,17 @@ function statusStrip(t, s) {
     v ? `<span class="st-in"><span class="st-k">${k}</span><span class="st-v${hot ? " hot" : ""}">${esc(String(v))}</span></span>` : "";
   const run = local
     ? stats
-      ? `<span class="st-live on">FRPC 运行中${stats.etime ? " · " + fmtEtime(stats.etime) : ""}</span>`
-      : `<span class="st-live${live ? " warm" : " off"}">FRPC ${live ? "进程未识别" : "未运行"}</span>`
+      ? `<span class="st-live on">${tx("FRPC 运行中", "FRPC running")}${stats.etime ? " · " + fmtEtime(stats.etime) : ""}</span>`
+      : `<span class="st-live${live ? " warm" : " off"}">${tx(`FRPC ${live ? "进程未识别" : "未运行"}`, `FRPC ${live ? "process not identified" : "not running"}`)}</span>`
     : "";
   return `<div class="st-line1">
-      <span class="badge ${live ? "run" : "stop"}">● 控制台${live ? "连接成功" : "连接未成功"}</span>
-      <span class="badge ${local && t.bootstrapped ? "mgd" : "ro"}">${local ? (t.bootstrapped ? "本机 · 托管" : "本机") : "远端"}</span>
+      <span class="badge ${live ? "run" : "stop"}">● ${tx(`控制台${live ? "连接成功" : "连接未成功"}`, `Console ${live ? "connected" : "not connected"}`)}</span>
+      <span class="badge ${local && t.bootstrapped ? "mgd" : "ro"}">${local ? (t.bootstrapped ? tx("本机 · 托管", "Local · managed") : tx("本机", "Local")) : tx("远端", "Remote")}</span>
       ${run}
-      ${live ? cell("隧道", `${s.runningCount} / ${s.proxyCount}`) : ""}
-      ${bad ? cell("异常", `${bad} 条`, true) : ""}
-      ${live ? cell("生效", state.storeMode ? "实时（store）" : "保存后") : ""}
-      ${t.needCreds ? '<span class="badge warn">缺控制台凭据</span>' : ""}
+      ${live ? cell(tx("隧道", "Tunnels"), `${s.runningCount} / ${s.proxyCount}`) : ""}
+      ${bad ? cell(tx("异常", "Issues"), tx(`${bad} 条`, String(bad)), true) : ""}
+      ${live ? cell(tx("生效", "Applied"), state.storeMode ? tx("实时（store）", "Live (store)") : tx("保存后", "After save")) : ""}
+      ${t.needCreds ? `<span class="badge warn">${tx("缺控制台凭据", "Missing console credentials")}</span>` : ""}
     </div>`;
 }
 
@@ -920,49 +934,53 @@ function renderConfigOverview() {
   const px = state.cfg.proxies || [];
   $("ov-status").innerHTML = statusStrip(t, s);
   $("i-ep").textContent = t ? `${t.host}:${t.port}` : "—";
-  $("i-ep-user").textContent = t ? t.user || "（未填凭据）" : "—";
+  $("i-ep-user").textContent = t ? t.user || tx("（未填凭据）", "(no credentials)") : "—";
   $("i-ep-run").textContent = t
     ? t.kind === "local"
       ? t.pid
         ? t.bootstrapped
-          ? "运行中 · LaunchAgent 监督"
-          : "运行中 · 独立进程"
-        : "未运行 · 可由本 App 启动"
-      : "需在目标机上操作"
+          ? tx("运行中 · LaunchAgent 监督", "Running · supervised by LaunchAgent")
+          : tx("运行中 · 独立进程", "Running · standalone process")
+        : tx("未运行 · 可由本 App 启动", "Not running · can be started by this app")
+      : tx("需在目标机上操作", "Operate on the target machine")
     : "—";
   const hasCfg = !!state.cfg.raw;
   $("i-srv").textContent = b.serverAddr
     ? `${b.serverAddr}:${b.serverPort || ""}`
     : hasCfg
-      ? "配置里没有 serverAddr"
-      : "未读取到配置";
+      ? tx("配置里没有 serverAddr", "No serverAddr in config")
+      : tx("未读取到配置", "Config not loaded");
   $("i-web-cfg").textContent = b.webAddr || b.webPort
     ? `${b.webAddr || "127.0.0.1"}:${b.webPort || ""}${b.webUser ? " · " + b.webUser : ""}`
     : hasCfg
-      ? "配置里没有 webServer"
-      : "未读取到配置";
+      ? tx("配置里没有 webServer", "No webServer in config")
+      : tx("未读取到配置", "Config not loaded");
   const storeN = px.filter((p) => p.source === "store").length;
   $("i-tc").textContent = hasCfg
-    ? `${px.length} 条` + (storeN ? ` · store ${storeN} / 文件 ${px.length - storeN}` : " · 全在配置文件")
-    : "未读取到配置";
+    ? tx(`${px.length} 条` + (storeN ? ` · store ${storeN} / 文件 ${px.length - storeN}` : " · 全在配置文件"),
+         `${px.length} entries` + (storeN ? ` · store ${storeN} / file ${px.length - storeN}` : " · all in config file"))
+    : tx("未读取到配置", "Config not loaded");
   const cfgPath = (s && s.configPath) || (t && t.kind === "local" ? t.configPath : "");
-  $("i-cfg").textContent = cfgPath || "远端（通过 API 读写）";
+  $("i-cfg").textContent = cfgPath || tx("远端（通过 API 读写）", "Remote (read/written via API)");
   const revealCfg = $("btn-reveal-cfg");
   revealCfg.disabled = !cfgPath || state.busy;
   revealCfg.title = cfgPath
-    ? `在 Finder 中定位 ${cfgPath}`
-    : "远端设备的配置文件在它自己的机器上，这里定位不了";
+    ? tx(`在 Finder 中定位 ${cfgPath}`, `Reveal ${cfgPath} in Finder`)
+    : tx("远端设备的配置文件在它自己的机器上，这里定位不了", "The remote device's config file is on its own machine — it can't be revealed here");
   $("i-saved").textContent = (s && s.savedAt) || "—";
   $("btn-edit-device").disabled = !t || state.busy;
   const edit = $("btn-edit-server");
   edit.disabled = !t || !hasCfg || state.busy;
   edit.title = !hasCfg
-    ? "读不到这台设备的配置：可能不在线，或地址与凭据不对。先点「编辑设备连接」核对"
-    : "改这台 frpc 自己的配置（服务端、控制台绑定、隧道）";
+    ? tx("读不到这台设备的配置：可能不在线、地址与凭据不对，或它的配置文件本身有问题——切到这台设备时弹出的报错里有 frpc 给出的原因",
+         "Can't read this device's config: it may be offline, the address/credentials may be wrong, or its config file itself has a problem — the error toast shown when switching to it carries frpc's reason")
+    : tx("改这台 frpc 自己的配置（服务端、控制台绑定、隧道）",
+         "Edit this frpc's own config (server, console binding, tunnels)");
   $("ov-foot-note").textContent = hasCfg
     ? ""
     : t && t.kind === "remote"
-      ? "这台设备连不上，读不到它的配置；改完「编辑设备连接」后重新点它的标签"
+      ? tx("没读到这台设备的配置：切到它时弹出的报错写了具体原因；若是地址或凭据问题，改完「编辑设备连接」后重新点它的标签",
+           "This device's config wasn't loaded: the error toast shown when switching to it states why; if it's an address/credential issue, fix \"Edit device connection\" and click its tab again")
       : "";
 }
 
@@ -1000,7 +1018,7 @@ async function openServerModal() {
   presetChips("c-web-addr-presets", "c-web-addr", ["127.0.0.1", t ? t.host : ""]);
   presetChips("c-web-port-presets", "c-web-port", ["7400", "7500", t ? String(t.port) : ""]);
   markPresets();
-  $("srv-title").textContent = `编辑设备配置 · ${t ? t.name : ""}`;
+  $("srv-title").textContent = tx(`编辑设备配置 · ${t ? t.name : ""}`, `Edit device config · ${t ? t.name : ""}`);
   styleSrvTabs();
   styleSrvFoot();
   $("server-mask").classList.remove("hidden");
@@ -1022,10 +1040,10 @@ function styleSrvFoot() {
   const apply = $("btn-server-apply");
   save.classList.toggle("hidden", remote);
   apply.classList.remove("hidden");
-  apply.textContent = remote ? "保存并热加载" : "保存并重启 frpc";
+  apply.textContent = remote ? tx("保存并热加载", "Save & hot-reload") : tx("保存并重启 frpc", "Save & restart frpc");
   $("srv-note").textContent = remote
-    ? "远端走 API 热加载，不能重启它的进程"
-    : "保存＝只写文件；保存并重启会短暂中断所有隧道";
+    ? tx("远端走 API 热加载，不能重启它的进程", "Remote uses API hot-reload; its process can't be restarted")
+    : tx("保存＝只写文件；保存并重启会短暂中断所有隧道", "Save only writes the file; Save & restart briefly interrupts all tunnels");
   const attn = state.srv.dirty;
   save.classList.toggle("attn", attn);
   apply.classList.toggle("attn", attn);
@@ -1070,9 +1088,10 @@ async function saveServer(withRestart) {
   // 远端的「保存并热加载」不动进程；只有本机重启会短暂断流，需要确认
   if (withRestart && (!t || t.kind === "local")) {
     const ok = await showConfirm(
-      "保存并重启 frpc？",
-      "写入配置并重启会短暂中断这台设备上的所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
-      "确认重启"
+      tx("保存并重启 frpc？", "Save and restart frpc?"),
+      tx("写入配置并重启会短暂中断这台设备上的所有隧道（约 1-3 秒）。若新配置启动失败，会自动回滚到本次保存前的备份。",
+         "Writing the config and restarting briefly interrupts all tunnels on this device (~1-3s). If the new config fails to start, it rolls back automatically to the pre-save backup."),
+      tx("确认重启", "Restart")
     );
     if (!ok) return;
   }
@@ -1101,7 +1120,7 @@ async function saveServer(withRestart) {
 
 async function reloadSrvDraft() {
   if (state.srv.dirty) {
-    const ok = await showConfirm("丢弃弹窗里的改动？", "将重新读取当前配置，弹窗里未保存的改动会被丢掉。", "丢弃并重读");
+    const ok = await showConfirm(tx("丢弃弹窗里的改动？", "Discard changes in this dialog?"), tx("将重新读取当前配置，弹窗里未保存的改动会被丢掉。", "The current config will be re-read; unsaved changes here will be lost."), tx("丢弃并重读", "Discard & reload"));
     if (!ok) return;
   }
   await loadConfig();
@@ -1109,12 +1128,12 @@ async function reloadSrvDraft() {
   $("c-raw").value = state.srv.raw;
   srvFillFields(state.cfg.basics || {});
   setSrvDirty(false);
-  toast("已重新读取当前配置", "info");
+  toast(tx("已重新读取当前配置", "Current config reloaded"), "info");
 }
 
 async function closeServerModal() {
   if (state.srv.dirty) {
-    const ok = await showConfirm("关闭编辑？", "弹窗里的改动还没有写入目标，关闭后会被丢弃。", "丢弃改动");
+    const ok = await showConfirm(tx("关闭编辑？", "Close editor?"), tx("弹窗里的改动还没有写入目标，关闭后会被丢弃。", "Changes here haven't been written to the target — closing will discard them."), tx("丢弃改动", "Discard changes"));
     if (!ok) return;
   }
   setSrvDirty(false);
@@ -1136,7 +1155,7 @@ document.querySelectorAll(".eye").forEach((btn) =>
     const inp = $(btn.dataset.for);
     const show = inp.type === "password";
     inp.type = show ? "text" : "password";
-    btn.textContent = show ? "隐藏" : "显示";
+    btn.textContent = show ? tx("隐藏", "Hide") : tx("显示", "Show");
   })
 );
 
@@ -1145,11 +1164,11 @@ document.querySelectorAll(".eye").forEach((btn) =>
 function syncProxyTypeHints(clearRemote) {
   const http = $("n-type").value === "http";
   const rh = $("n-remote-hint");
-  rh.textContent = http ? "http 走域名访问，一般留空；需要固定端口也可以填" : "必填 · frps 对外暴露的端口";
+  rh.textContent = http ? tx("http 走域名访问，一般留空；需要固定端口也可以填", "HTTP is accessed by domain — usually left blank. A fixed port works too") : tx("必填 · frps 对外暴露的端口", "Required · the port frps exposes");
   rh.classList.toggle("req", !http);
-  $("n-remote-port").placeholder = http ? "可留空" : "必填，如 9090";
+  $("n-remote-port").placeholder = http ? tx("可留空", "Optional") : tx("必填，如 9090", "Required, e.g. 9090");
   const dh = $("n-domain-hint");
-  dh.textContent = http ? "必填 · 访问入口，多个用逗号分隔" : "可留空 · tcp 仅作域名记录，frps 不按域名路由";
+  dh.textContent = http ? tx("必填 · 访问入口，多个用逗号分隔", "Required · access domain(s), comma-separated") : tx("可留空 · tcp 仅作域名记录，frps 不按域名路由", "Optional · for tcp it's just a domain note; frps doesn't route by domain");
   dh.classList.toggle("req", http);
   if (clearRemote && http) $("n-remote-port").value = "";
 }
@@ -1157,11 +1176,11 @@ $("n-type").addEventListener("change", () => syncProxyTypeHints(true));
 
 function openAddProxy() {
   state.editing = null;
-  $("proxy-title").textContent = "新建隧道";
-  $("btn-add").textContent = state.storeMode ? "立即创建" : "加入暂存";
+  $("proxy-title").textContent = tx("新建隧道", "New tunnel");
+  $("btn-add").textContent = state.storeMode ? tx("立即创建", "Create now") : tx("加入暂存", "Add to staged");
   $("proxy-hint").textContent = state.storeMode
-    ? "该目标开了 store，新建后立即生效，无需重启"
-    : "加入暂存列表后仍需点右上角的保存按钮写入当前目标";
+    ? tx("该目标开了 store，新建后立即生效，无需重启", "This target has store enabled — new tunnels take effect immediately, no restart needed")
+    : tx("加入暂存列表后仍需点右上角的保存按钮写入当前目标", "Staged entries still need the Save button at the top right to be written to the current target");
   ["n-name", "n-local-port", "n-remote-port", "n-domain"].forEach((i) => ($(i).value = ""));
   $("n-local-ip").value = "127.0.0.1";
   $("n-type").value = "tcp";
@@ -1183,16 +1202,16 @@ function isLiveEntry(name) {
 function openEditProxy(name) {
   const c = (state.cfg.proxies || []).find((x) => x.name === name);
   if (!c) {
-    toast("未在当前目标里找到该隧道", "err");
+    toast(tx("未在当前目标里找到该隧道", "Tunnel not found on the current target"), "err");
     return;
   }
   const live = isLiveEntry(name);
   state.editing = name;
-  $("proxy-title").textContent = `编辑隧道 · ${name}`;
-  $("btn-add").textContent = live ? "立即保存" : "保存改动";
+  $("proxy-title").textContent = tx(`编辑隧道 · ${name}`, `Edit tunnel · ${name}`);
+  $("btn-add").textContent = live ? tx("立即保存", "Save now") : tx("保存改动", "Save changes");
   $("proxy-hint").textContent = live
-    ? "这条隧道存在 frpc 的 store 里，保存后立即生效，无需重启"
-    : "改动写入暂存后仍需点右上角的保存按钮落地到当前目标";
+    ? tx("这条隧道存在 frpc 的 store 里，保存后立即生效，无需重启", "This tunnel lives in frpc's store — saving applies it immediately, no restart needed")
+    : tx("改动写入暂存后仍需点右上角的保存按钮落地到当前目标", "Changes go to staging; the Save button at the top right still writes them to the current target");
   $("n-name").value = c.name;
   $("n-type").value = ["tcp", "http", "udp"].includes(c.ptype) ? c.ptype : "tcp";
   $("n-local-ip").value = c.localIp || "127.0.0.1";
@@ -1229,7 +1248,7 @@ $("btn-add").addEventListener("click", async () => {
     ...advValues(),
   };
   if (!np.name) {
-    toast("名称不能为空", "err");
+    toast(tx("名称不能为空", "Name is required"), "err");
     return;
   }
   const di = state.ai.editDraft;
@@ -1246,14 +1265,14 @@ $("btn-add").addEventListener("click", async () => {
       await aiApplyOne(di);
       renderAiDrafts();
       if (d.st !== "ok") {
-        toast(d.msg || "应用失败，可在弹窗里继续修改", "err");
+        toast(d.msg || tx("应用失败，可在弹窗里继续修改", "Apply failed — you can keep editing in the dialog"), "err");
         return;
       }
       closeAddProxy();
       await loadConfig();
       if (!state.storeMode) setDirty(true);
       await refreshStatus();
-      toast(typeof d.note === "string" && d.note ? d.note : "草案已应用", "ok");
+      toast(typeof d.note === "string" && d.note ? d.note : tx("草案已应用", "Draft applied"), "ok");
     });
     return;
   }
@@ -1268,7 +1287,7 @@ $("btn-add").addEventListener("click", async () => {
     await loadConfig();
     if (!live) setDirty(true);
     await refreshStatus();
-    toast(typeof res === "string" ? res : live ? `已改动「${np.name}」` : "已加入暂存列表，点右上角的保存按钮写入目标");
+    toast(typeof res === "string" ? res : live ? tx(`已改动「${np.name}」`, `Updated "${np.name}"`) : tx("已加入暂存列表，点右上角的保存按钮写入目标", "Added to the staged list — press Save at the top right to write it to the target"));
   });
 });
 
@@ -1285,11 +1304,11 @@ async function proc(action) {
 }
 $("btn-start").addEventListener("click", () => proc("start"));
 $("btn-restart").addEventListener("click", async () => {
-  const ok = await showConfirm("重启 frpc？", "重启会短暂中断当前所有隧道（约 1-3 秒）。", "确认重启");
+  const ok = await showConfirm(tx("重启 frpc？", "Restart frpc?"), tx("重启会短暂中断当前所有隧道（约 1-3 秒）。", "Restarting briefly interrupts all current tunnels (~1-3s)."), tx("确认重启", "Restart"));
   if (ok) proc("restart");
 });
 $("btn-stop").addEventListener("click", async () => {
-  const ok = await showConfirm("停止 frpc？", "停止将中断当前所有隧道，直到再次启动。", "确认停止");
+  const ok = await showConfirm(tx("停止 frpc？", "Stop frpc?"), tx("停止将中断当前所有隧道，直到再次启动。", "Stopping interrupts all current tunnels until frpc is started again."), tx("确认停止", "Stop"));
   if (ok) proc("stop");
 });
 
@@ -1307,7 +1326,7 @@ async function loadLog() {
   if (okv(page)) {
     state.logOff = page.next;
     state.logMore = page.hasMore;
-    $("log-box").textContent = page.text || "（空）";
+    $("log-box").textContent = page.text || tx("（空）", "(empty)");
     $("log-box").scrollTop = $("log-box").scrollHeight;
   }
   $("log-more").classList.toggle("hidden", !state.logMore);
@@ -1353,12 +1372,12 @@ $("btn-reveal-log").addEventListener("click", async () => {
 /* ---------- AI 编排 ---------- */
 /* 常用 OpenAI 兼容服务：点 chip 填 base_url + 一个能用的模型名，仍可手改 */
 const AI_PROVIDERS = [
-  ["Agnes 免费", "https://llm.ause.cc/openai/v1", "agnes-3.0-flash"],
+  [tx("Agnes 免费", "Agnes Free"), "https://llm.ause.cc/openai/v1", "agnes-3.0-flash"],
   ["OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"],
   ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"],
   ["Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"],
-  ["百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
-  ["Ollama 本地", "http://127.0.0.1:11434/v1", "qwen2.5"],
+  [tx("百炼", "Bailian"), "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
+  [tx("Ollama 本地", "Ollama Local"), "http://127.0.0.1:11434/v1", "qwen2.5"],
 ];
 
 function renderAiProviders() {
@@ -1374,21 +1393,21 @@ function renderAiProfiles() {
     ? ps
         .map(
           (p) => `
-    <div class="ai-prof ${p.name === state.ai.default ? "on" : ""}" data-name="${esc(p.name)}" title="点击选用这个配置">
+    <div class="ai-prof ${p.name === state.ai.default ? "on" : ""}" data-name="${esc(p.name)}" title="${tx("点击选用这个配置", "Click to use this profile")}">
       <span class="ap-dot"></span>
       <span class="ap-name">${esc(p.name)}</span>
       <span class="ap-model">${esc(p.model)} · ${esc(p.baseUrl)}</span>
       <span class="flex1"></span>
-      <button class="btn xs ap-edit" data-name="${esc(p.name)}">编辑</button>
-      <button class="btn xs ghost ap-del" data-name="${esc(p.name)}">删除</button>
+      <button class="btn xs ap-edit" data-name="${esc(p.name)}">${tx("编辑", "Edit")}</button>
+      <button class="btn xs ghost ap-del" data-name="${esc(p.name)}">${tx("删除", "Delete")}</button>
     </div>`
         )
         .join("")
-    : `<div class="hint">还没有模型配置，点右上角「+ 添加模型配置」，填一个 OpenAI 兼容服务的地址即可（DeepSeek / Kimi / 百炼 / Ollama 都有预置）。</div>`;
+    : `<div class="hint">${tx("还没有模型配置，点右上角「+ 添加模型配置」，填一个 OpenAI 兼容服务的地址即可（DeepSeek / Kimi / 百炼 / Ollama 都有预置）。", "No model profiles yet — click \"+ Add model profile\" at the top right and enter any OpenAI-compatible endpoint (DeepSeek / Kimi / Bailian / Ollama presets included).")}</div>`;
   const cur = ps.find((p) => p.name === state.ai.default);
   $("ai-use-note").textContent = cur
-    ? `使用「${cur.name}」(${cur.model}) · 草案不会自动写入，逐条确认后才加到当前设备`
-    : "草案不会自动写入，逐条确认后才加到当前设备";
+    ? tx(`使用「${cur.name}」(${cur.model}) · 草案不会自动写入，逐条确认后才加到当前设备`, `Using "${cur.name}" (${cur.model}) · drafts are never applied automatically; each one goes to the current device only after you confirm it`)
+    : tx("草案不会自动写入，逐条确认后才加到当前设备", "Drafts are never applied automatically; each one goes to the current device only after you confirm it");
 }
 
 async function loadAiCfg() {
@@ -1406,12 +1425,12 @@ async function loadAiCfg() {
 function openAiModal(original) {
   state.ai.editing = original || "";
   const p = original ? state.ai.profiles.find((x) => x.name === original) : null;
-  $("ai-modal-title").textContent = p ? `编辑模型配置「${p.name}」` : "添加模型配置";
+  $("ai-modal-title").textContent = p ? tx(`编辑模型配置「${p.name}」`, `Edit model profile "${p.name}"`) : tx("添加模型配置", "Add model profile");
   $("ai-f-name").value = p ? p.name : "";
   $("ai-f-base").value = p ? p.baseUrl : "";
   $("ai-f-model").value = p ? p.model : "";
   $("ai-f-key").value = "";
-  $("ai-f-key").placeholder = p && p.hasKey ? "已保存，留空则保持不变" : "API Key（只存本机 app.toml）";
+  $("ai-f-key").placeholder = p && p.hasKey ? tx("已保存，留空则保持不变", "Saved — leave blank to keep it") : tx("API Key（只存本机 app.toml）", "API Key (stored only in local app.toml)");
   aiEndpointChanged();
   renderAiProviders();
   $("ai-mask").classList.remove("hidden");
@@ -1424,7 +1443,7 @@ function closeAiModal() {
 }
 
 /* 模型列表：测连接后从 /models 拉来，输入时按子串过滤，也可直接手填 */
-const AI_TEST_NOTE = "用上面的地址和 Key 请求 /models，通了会自动出模型列表";
+const AI_TEST_NOTE = tx("用上面的地址和 Key 请求 /models，通了会自动出模型列表", "Requests /models with the address and key above; on success the model list appears automatically");
 
 function aiEndpointChanged() {
   state.ai.models = [];
@@ -1443,7 +1462,7 @@ function showAiModels() {
   const ms = state.ai.models.filter((m) => !q || m.toLowerCase().includes(q));
   el.innerHTML = ms.length
     ? ms.map((m) => `<div class="ac-item${m === cur ? " on" : ""}">${esc(m)}</div>`).join("")
-    : `<div class="ac-empty">列表里没有匹配的，可直接手填</div>`;
+    : `<div class="ac-empty">${tx("列表里没有匹配的，可直接手填", "No match in the list — type it in directly")}</div>`;
   el.classList.remove("hidden");
 }
 
@@ -1465,18 +1484,18 @@ function renderAiDrafts() {
         const local = `${d.localIp || "127.0.0.1"}:${d.localPort || "?"}`;
         // http 走 frps 虚拟主端口（一般 80）；tcp/udp 用 real remotePort，缺了标"待补"
         const port = d.ptype === "http" ? (d.remotePort || "80") : d.remotePort;
-        const addr = `${frps}:${port || "待补"}`;
+        const addr = `${frps}:${port || tx("待补", "TBD")}`;
         // 第二行优先印域名（tcp 也可能带域名记录），没有才轮到生成理由
         const rSub = d.domain || (d.reason || "");
         const badge = d.st === "ok"
-          ? '<span class="badge run">● 已应用</span>'
+          ? `<span class="badge run">● ${tx("已应用", "Applied")}</span>`
           : d.st === "err"
-            ? `<span class="badge stop" title="${esc(d.msg || "应用失败")}">● 失败</span>`
-            : '<span class="badge ro">○ 草案</span>';
+            ? `<span class="badge stop" title="${esc(d.msg || tx("应用失败", "Apply failed"))}">● ${tx("失败", "Failed")}</span>`
+            : `<span class="badge ro">○ ${tx("草案", "Draft")}</span>`;
         const msg = d.st === "ok" && d.note
           ? `<div class="ad-ok">${esc(d.note)}</div>`
           : d.st === "err"
-            ? `<div class="ad-err">${esc(d.msg || "应用失败")}</div>`
+            ? `<div class="ad-err">${esc(d.msg || tx("应用失败", "Apply failed"))}</div>`
             : "";
         return `
     <div class="ai-draft ${d.st}">
@@ -1489,8 +1508,8 @@ function renderAiDrafts() {
         <div class="col-remote t-two" title="${esc(rSub ? `${addr} · ${rSub}` : addr)}"><span class="r-main">${esc(addr)}</span>${rSub ? `<span class="r-sub">${esc(rSub)}</span>` : ""}</div>
         <span class="col-status">${badge}</span>
         <span class="col-edit">
-          <button class="btn icon ad-edit" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="编辑这条草案">${ICO_EDIT}</button>
-          <button class="btn icon ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="${d.st === "ok" ? "已应用" : d.st === "err" ? "重试应用到当前设备" : "应用到当前设备"}">${ICO_OK}</button>
+          <button class="btn icon ad-edit" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="${tx("编辑这条草案", "Edit this draft")}">${ICO_EDIT}</button>
+          <button class="btn icon ad-apply" data-i="${i}" ${d.st === "ok" ? "disabled" : ""} title="${d.st === "ok" ? tx("已应用", "Applied") : d.st === "err" ? tx("重试应用到当前设备", "Retry applying to the current device") : tx("应用到当前设备", "Apply to the current device")}">${ICO_OK}</button>
         </span>
       </div>
       ${msg}
@@ -1506,9 +1525,9 @@ function openEditDraft(i) {
   if (!d || d.st === "ok") return;
   state.editing = null;
   state.ai.editDraft = i;
-  $("proxy-title").textContent = `编辑草案 · ${d.name}`;
-  $("btn-add").textContent = "保存并应用";
-  $("proxy-hint").textContent = "改好后保存，这条会直接应用到当前目标";
+  $("proxy-title").textContent = tx(`编辑草案 · ${d.name}`, `Edit draft · ${d.name}`);
+  $("btn-add").textContent = tx("保存并应用", "Save & apply");
+  $("proxy-hint").textContent = tx("改好后保存，这条会直接应用到当前目标", "Save after editing — this draft will be applied directly to the current target");
   $("n-name").value = d.name || "";
   $("n-type").value = ["tcp", "http", "udp"].includes(d.ptype) ? d.ptype : "tcp";
   $("n-local-ip").value = d.localIp || "127.0.0.1";
@@ -1561,12 +1580,12 @@ async function aiApply(indices) {
       await refreshStatus();
     }
     renderAiDrafts();
-    if (bad) toast(`应用了 ${ok} 条，${bad} 条失败，原因见草案卡片`, "err");
+    if (bad) toast(tx(`应用了 ${ok} 条，${bad} 条失败，原因见草案卡片`, `Applied ${ok}, ${bad} failed — see the draft cards for reasons`), "err");
     else
       toast(
         state.storeMode
-          ? `${ok} 条隧道已实时生效，无需重启`
-          : `${ok} 条已加入暂存，点右上角「保存」写入目标`,
+          ? tx(`${ok} 条隧道已实时生效，无需重启`, `${ok} tunnels are live now, no restart needed`)
+          : tx(`${ok} 条已加入暂存，点右上角「保存」写入目标`, `${ok} staged — press "Save" at the top right to write them to the target`),
         "ok"
       );
   });
@@ -1606,11 +1625,11 @@ $("btn-ai-test").addEventListener("click", async () => {
       profile: state.ai.editing,
     });
     if (!okv(r)) {
-      $("ai-test-note").textContent = "连接未通过，先看提示再改地址或 Key";
+      $("ai-test-note").textContent = tx("连接未通过，先看提示再改地址或 Key", "Connection failed — read the note, then fix the address or key");
       return;
     }
     state.ai.models = r.models || [];
-    $("ai-test-note").textContent = `连接成功 · ${state.ai.models.length} 个模型，点模型框即可选择`;
+    $("ai-test-note").textContent = tx(`连接成功 · ${state.ai.models.length} 个模型，点模型框即可选择`, `Connected · ${state.ai.models.length} models — click the model box to pick one`);
     if (state.ai.models.length === 1 && !$("ai-f-model").value.trim()) {
       $("ai-f-model").value = state.ai.models[0];
     }
@@ -1648,7 +1667,7 @@ $("ai-profiles").addEventListener("click", async (e) => {
   const del = e.target.closest(".ap-del");
   if (del) {
     const name = del.dataset.name;
-    const yes = await showConfirm("删除模型配置", `删除「${name}」？API Key 也会一并从本机移除。`, "删除");
+    const yes = await showConfirm(tx("删除模型配置", "Delete model profile"), tx(`删除「${name}」？API Key 也会一并从本机移除。`, `Delete "${name}"? Its API Key will be removed from this machine as well.`), tx("删除", "Delete"));
     if (!yes) return;
     await withBusy(async () => {
       const r = await call("remove_ai_profile", { name });
@@ -1671,11 +1690,11 @@ $("ai-profiles").addEventListener("click", async (e) => {
 $("btn-ai-gen").addEventListener("click", async () => {
   const prompt = $("ai-prompt").value.trim();
   if (!prompt) {
-    toast("先描述需求", "err");
+    toast(tx("先描述需求", "Describe what you need first"), "err");
     return;
   }
   if (!state.ai.default) {
-    toast("先添加并选择一个模型配置", "err");
+    toast(tx("先添加并选择一个模型配置", "Add and select a model profile first"), "err");
     return;
   }
   await withBusy(async () => {
@@ -1684,7 +1703,9 @@ $("btn-ai-gen").addEventListener("click", async () => {
     state.ai.drafts = (r.tunnels || []).map((t) => ({ ...t, st: "", msg: "" }));
     renderAiDrafts();
     toast(
-      state.ai.drafts.length ? `生成了 ${state.ai.drafts.length} 条草案，确认后应用` : "模型没有给出草案",
+      state.ai.drafts.length
+        ? tx(`生成了 ${state.ai.drafts.length} 条草案，确认后应用`, `Generated ${state.ai.drafts.length} drafts — review, then apply`)
+        : tx("模型没有给出草案", "The model returned no drafts"),
       state.ai.drafts.length ? "ok" : "info"
     );
   });
@@ -1708,6 +1729,25 @@ $("ai-drafts").addEventListener("click", (e) => {
 });
 
 /* ---------- global ---------- */
+/* 语言切换：入口在侧边栏底部；存到 app.toml [ui] lang 后整页重载 —— i18n.js 会先取 get_lang 再加载 app.js，
+   顶层常量与所有渲染天然拿到最终语言，不用逐处审计重渲染路径 */
+function styleLangBtn() {
+  // 地球 + 目标语言名：中文界面显示 "English"，英文界面显示 "中文"，点击互切
+  const b = $("btn-lang");
+  b.querySelector(".lang-label").textContent = LANG === "zh" ? "English" : "中文";
+  b.title = tx("界面语言：中文 · 点击切换到 English", "UI language: English · click to switch to Chinese");
+}
+$("btn-lang").addEventListener("click", async () => {
+  const next = LANG === "zh" ? "en" : "zh";
+  try {
+    await invoke("set_lang_cmd", { lang: next });
+  } catch (e) {
+    toast(String(e), "err");
+    return;
+  }
+  location.reload();
+});
+
 $("btn-refresh").addEventListener("click", async () => {
   showSkeletons();
   if (state.page === "config") await loadConfig();
@@ -1717,6 +1757,7 @@ $("btn-refresh").addEventListener("click", async () => {
 });
 
 (async function init() {
+  styleLangBtn();
   showPage("tunnels");
   showSkeletons();
   await loadTargets();

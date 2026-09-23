@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod l10n;
 
 use backend::{
     apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
@@ -86,7 +87,7 @@ impl NewProxyDto {
             .local_port
             .trim()
             .parse()
-            .map_err(|_| "localPort 必须是数字".to_string())?;
+            .map_err(|_| t!("localPort 必须是数字", "localPort must be a number"))?;
         let remote_port = if self.remote_port.trim().is_empty() {
             None
         } else {
@@ -94,7 +95,7 @@ impl NewProxyDto {
                 self.remote_port
                     .trim()
                     .parse::<i64>()
-                    .map_err(|_| "remotePort 必须是数字".to_string())?,
+                    .map_err(|_| t!("remotePort 必须是数字", "remotePort must be a number"))?,
             )
         };
         let domain = if self.domain.trim().is_empty() {
@@ -129,7 +130,7 @@ fn local_instance(state: &AppState, id: &str) -> Result<LocalInstance, String> {
         .iter()
         .find(|x| x.id == id)
         .cloned()
-        .ok_or_else(|| "该本机实例已不存在，请重新扫描".to_string())
+        .ok_or_else(|| t!("该本机实例已不存在，请重新扫描", "This local instance no longer exists; rescan"))
 }
 
 fn active_of(state: &AppState) -> Active {
@@ -149,7 +150,7 @@ fn active_endpoint(state: &AppState) -> Result<(Active, Endpoint), String> {
             let r = rs
                 .iter()
                 .find(|r| r.name == *name)
-                .ok_or_else(|| format!("远端目标 {name} 已不存在"))?;
+                .ok_or_else(|| t!(format!("远端目标 {name} 已不存在"), format!("Remote target {name} no longer exists")))?;
             Ok((a, r.endpoint()))
         }
     }
@@ -183,7 +184,10 @@ async fn store_capable(state: &AppState) -> Result<bool, String> {
     let (_, ep) = active_endpoint(state)?;
     match blocked(move || probe_store(&ep)).await {
         Ok(v) => Ok(v),
-        Err(e) => Err(format!("探测 store 能力失败：{e}")),
+        Err(e) => Err(t!(
+            format!("探测 store 能力失败：{e}"),
+            format!("Failed to probe store capability: {e}")
+        )),
     }
 }
 
@@ -233,9 +237,15 @@ fn guard_local_basics(
     };
     for r in state.remotes.lock().unwrap().iter() {
         if clash(&r.host, &r.port.to_string()) {
-            return Err(format!(
-                "{}:{} 是远端目标「{}」的控制台地址，不能写进本机实例的配置",
-                b.web_addr, b.web_port, r.name
+            return Err(t!(
+                format!(
+                    "{}:{} 是远端目标「{}」的控制台地址，不能写进本机实例的配置",
+                    b.web_addr, b.web_port, r.name
+                ),
+                format!(
+                    "{}:{} is the console address of remote target \"{name}\"; it must not be written into a local instance's config",
+                    b.web_addr, b.web_port, name = r.name
+                )
             ));
         }
     }
@@ -243,9 +253,15 @@ fn guard_local_basics(
         if l.id != id {
             let (h, p) = host_port_of(&l.target.base_url);
             if clash(&h, &p) {
-                return Err(format!(
-                    "{}:{} 是本机另一个实例「{}」的控制台地址，两个实例不能共用一个端口",
-                    b.web_addr, b.web_port, l.name
+                return Err(t!(
+                    format!(
+                        "{}:{} 是本机另一个实例「{}」的控制台地址，两个实例不能共用一个端口",
+                        b.web_addr, b.web_port, l.name
+                    ),
+                    format!(
+                        "{}:{} is the console address of another local instance \"{name}\"; two instances cannot share one port",
+                        b.web_addr, b.web_port, name = l.name
+                    )
                 ));
             }
         }
@@ -303,7 +319,10 @@ async fn rescan(state: &AppState) -> Result<(), String> {
                 let src = pull_staged(state).await.unwrap_or_default();
                 *state.staged.lock().unwrap() = src;
             }
-            None => return Err("既没有本机实例也没有远端目标".into()),
+            None => return Err(t!(
+                "既没有本机实例也没有远端目标",
+                "No local instances and no remote targets"
+            )),
         }
     }
     Ok(())
@@ -405,11 +424,17 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
         }
         "remote" => {
             if !state.remotes.lock().unwrap().iter().any(|r| r.name == id) {
-                return Err(format!("远端目标 {id} 不存在"));
+                return Err(t!(
+                    format!("远端目标 {id} 不存在"),
+                    format!("Remote target {id} does not exist")
+                ));
             }
             Active::Remote(id)
         }
-        other => return Err(format!("未知目标类型 {other}")),
+        other => return Err(t!(
+            format!("未知目标类型 {other}"),
+            format!("Unknown target type {other}")
+        )),
     };
     *state.active.lock().unwrap() = next.clone();
     // 选中一台设备不该要求它活着，更不该为它等网络：这里只切指针、清暂存，
@@ -419,7 +444,10 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
         Active::Local(i) => local_instance(&state, i)?.name,
         Active::Remote(n) => n.clone(),
     };
-    Ok(format!("已切换到目标「{label}」"))
+    Ok(t!(
+        format!("已切换到目标「{label}」"),
+        format!("Switched to target \"{label}\"")
+    ))
 }
 
 /// 从活动目标的权威源刷新暂存配置（可能很慢：远端不可达时要吃满超时）
@@ -443,7 +471,10 @@ async fn add_local(
 ) -> Result<String, String> {
     let path = config_path.trim();
     if path.is_empty() {
-        return Err("配置文件路径不能为空".into());
+        return Err(t!(
+            "配置文件路径不能为空",
+            "Config file path must not be empty"
+        ));
     }
     // 与探测到的实例用同一套字面路径比较，所以这里不做 canonicalize（符号链接会改写路径）
     let id = match path.strip_prefix("~/") {
@@ -451,10 +482,16 @@ async fn add_local(
         None => path.to_string(),
     };
     if !std::path::Path::new(&id).is_absolute() {
-        return Err("请填写绝对路径，例如 /opt/homebrew/etc/frpc/frpc.toml".into());
+        return Err(t!(
+            "请填写绝对路径，例如 /opt/homebrew/etc/frpc/frpc.toml",
+            "Enter an absolute path, e.g. /opt/homebrew/etc/frpc/frpc.toml"
+        ));
     }
     if !std::path::Path::new(&id).exists() {
-        return Err(format!("文件不存在：{id}"));
+        return Err(t!(
+            format!("文件不存在：{id}"),
+            format!("File does not exist: {id}")
+        ));
     }
     let name = name.unwrap_or_default().trim().to_string();
     let addr = addr.unwrap_or_default().trim().to_string();
@@ -483,9 +520,15 @@ async fn add_local(
     rescan(&state).await?;
     let found = local_instance(&state, &id).is_ok();
     if found {
-        Ok(format!("已添加本机实例 {id}"))
+        Ok(t!(
+            format!("已添加本机实例 {id}"),
+            format!("Added local instance {id}")
+        ))
     } else {
-        Err("添加后未能识别该实例".into())
+        Err(t!(
+            "添加后未能识别该实例",
+            "Instance was not recognized after adding"
+        ))
     }
 }
 
@@ -506,12 +549,15 @@ async fn check_update(current: String) -> Result<serde_json::Value, String> {
 async fn rename_local(state: State<'_, AppState>, id: String, name: String) -> Result<String, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("名称不能为空".into());
+        return Err(t!("名称不能为空", "Name must not be empty"));
     }
     local_instance(&state, &id)?;
     upsert_local_saved(&id, |s| s.name = name.clone())?;
     rescan(&state).await?;
-    Ok(format!("已改名为「{name}」"))
+    Ok(t!(
+        format!("已改名为「{name}」"),
+        format!("Renamed to \"{name}\"")
+    ))
 }
 
 #[tauri::command]
@@ -520,21 +566,30 @@ async fn remove_local(state: State<'_, AppState>, id: String) -> Result<String, 
     let before = ls.len();
     ls.retain(|x| x.config_path != id);
     if ls.len() == before {
-        return Err("该实例没有可移除的标注（它是由进程或 LaunchAgent 探测到的）".into());
+        return Err(t!(
+            "该实例没有可移除的标注（它是由进程或 LaunchAgent 探测到的）",
+            "This instance has no annotation to remove (it was detected from a process or LaunchAgent)"
+        ));
     }
     save_locals(&ls).map_err(|e| format!("{e:#}"))?;
     rescan(&state).await?;
     if local_instance(&state, &id).is_ok() {
-        return Ok("已移除标注，但该实例仍在运行或被 LaunchAgent 监督，会重新出现".to_string());
+        return Ok(t!(
+            "已移除标注，但该实例仍在运行或被 LaunchAgent 监督，会重新出现",
+            "Annotation removed, but the instance is still running or LaunchAgent-managed and will reappear"
+        ));
     }
-    Ok("已移除本机实例标注".to_string())
+    Ok(t!("已移除本机实例标注", "Local instance annotation removed"))
 }
 
 #[tauri::command]
 async fn rescan_locals(state: State<'_, AppState>) -> Result<String, String> {
     rescan(&state).await?;
     let n = state.locals.lock().unwrap().len();
-    Ok(format!("已重新扫描，识别到 {n} 个本机实例"))
+    Ok(t!(
+        format!("已重新扫描，识别到 {n} 个本机实例"),
+        format!("Rescanned; found {n} local instance(s)")
+    ))
 }
 
 #[tauri::command]
@@ -549,16 +604,22 @@ async fn add_target(
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("目标名称不能为空".into());
+        return Err(t!("目标名称不能为空", "Target name must not be empty"));
     }
     validate_host(&host).map_err(|e| format!("{e:#}"))?;
-    let port: u16 = port.trim().parse().map_err(|_| "端口必须是数字".to_string())?;
+    let port: u16 = port
+        .trim()
+        .parse()
+        .map_err(|_| t!("端口必须是数字", "Port must be a number"))?;
     if user.trim().is_empty() {
-        return Err("webServer 用户名不能为空".into());
+        return Err(t!(
+            "webServer 用户名不能为空",
+            "webServer user must not be empty"
+        ));
     }
     let os = os.unwrap_or_default();
     if !valid_os(&os) {
-        return Err("机器类型不合法".into());
+        return Err(t!("机器类型不合法", "Invalid machine type"));
     }
     let r = RemoteTarget {
         name: name.clone(),
@@ -576,18 +637,30 @@ async fn add_target(
         .iter()
         .any(|x| x.name == r.name)
     {
-        return Err(format!("已存在同名目标 {name}"));
+        return Err(t!(
+            format!("已存在同名目标 {name}"),
+            format!("A target named {name} already exists")
+        ));
     }
     blocked(move || fetch_status(&ep))
         .await
-        .map_err(|e| format!("连接测试失败：{e}"))?;
+        .map_err(|e| t!(
+            format!("连接测试失败：{e}"),
+            format!("Connection test failed: {e}")
+        ))?;
     let mut rs = state.remotes.lock().unwrap();
     if rs.iter().any(|x| x.name == r.name) {
-        return Err(format!("已存在同名目标 {name}"));
+        return Err(t!(
+            format!("已存在同名目标 {name}"),
+            format!("A target named {name} already exists")
+        ));
     }
     rs.push(r);
     save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已添加远端目标「{name}」"))
+    Ok(t!(
+        format!("已添加远端目标「{name}」"),
+        format!("Added remote target \"{name}\"")
+    ))
 }
 
 /// 更新一台已登记的远端设备（改名 / 换地址端口 / 轮换凭据）。
@@ -605,25 +678,37 @@ async fn update_target(
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("设备名称不能为空".into());
+        return Err(t!("设备名称不能为空", "Device name must not be empty"));
     }
     validate_host(&host).map_err(|e| format!("{e:#}"))?;
-    let port: u16 = port.trim().parse().map_err(|_| "端口必须是数字".to_string())?;
+    let port: u16 = port
+        .trim()
+        .parse()
+        .map_err(|_| t!("端口必须是数字", "Port must be a number"))?;
     if user.trim().is_empty() {
-        return Err("webServer 用户名不能为空".into());
+        return Err(t!(
+            "webServer 用户名不能为空",
+            "webServer user must not be empty"
+        ));
     }
     let os = os.unwrap_or_default();
     if !valid_os(&os) {
-        return Err("机器类型不合法".into());
+        return Err(t!("机器类型不合法", "Invalid machine type"));
     }
     let next = {
         let rs = state.remotes.lock().unwrap();
         let cur = rs
             .iter()
             .find(|r| r.name == original)
-            .ok_or_else(|| format!("远端设备 {original} 不存在"))?;
+            .ok_or_else(|| t!(
+                format!("远端设备 {original} 不存在"),
+                format!("Remote device {original} does not exist")
+            ))?;
         if rs.iter().any(|r| r.name == name && r.name != original) {
-            return Err(format!("已存在同名设备 {name}"));
+            return Err(t!(
+                format!("已存在同名设备 {name}"),
+                format!("A device named {name} already exists")
+            ));
         }
         RemoteTarget {
             name: name.clone(),
@@ -637,13 +722,19 @@ async fn update_target(
     let ep = next.endpoint();
     blocked(move || fetch_status(&ep))
         .await
-        .map_err(|e| format!("连接测试失败，未保存：{e}"))?;
+        .map_err(|e| t!(
+            format!("连接测试失败，未保存：{e}"),
+            format!("Connection test failed, nothing saved: {e}")
+        ))?;
     {
         let mut rs = state.remotes.lock().unwrap();
         let i = rs
             .iter()
             .position(|r| r.name == original)
-            .ok_or_else(|| format!("远端设备 {original} 不存在"))?;
+            .ok_or_else(|| t!(
+                format!("远端设备 {original} 不存在"),
+                format!("Remote device {original} does not exist")
+            ))?;
         rs[i] = next;
         save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
     }
@@ -653,7 +744,10 @@ async fn update_target(
             *state.staged.lock().unwrap() = src;
         }
     }
-    Ok(format!("已更新设备「{name}」"))
+    Ok(t!(
+        format!("已更新设备「{name}」"),
+        format!("Device \"{name}\" updated")
+    ))
 }
 
 #[tauri::command]
@@ -663,13 +757,19 @@ async fn remove_target(state: State<'_, AppState>, name: String) -> Result<Strin
         let before = rs.len();
         rs.retain(|r| r.name != name);
         if rs.len() == before {
-            return Err(format!("远端目标 {name} 不存在"));
+            return Err(t!(
+                format!("远端目标 {name} 不存在"),
+                format!("Remote target {name} does not exist")
+            ));
         }
         save_remotes(&rs).map_err(|e| format!("{e:#}"))?;
     }
     // 若活动目标正是被删的那个，rescan 会挑一个仍然存在的目标顶上
     rescan(&state).await?;
-    Ok(format!("已移除远端目标「{name}」"))
+    Ok(t!(
+        format!("已移除远端目标「{name}」"),
+        format!("Remote target \"{name}\" removed")
+    ))
 }
 
 #[tauri::command]
@@ -849,11 +949,17 @@ async fn add_proxy_cmd(state: State<'_, AppState>, np: NewProxyDto) -> Result<St
         let ep2 = ep.clone();
         let p2 = p.clone();
         blocked(move || store_add(&ep2, &p2)).await?;
-        return Ok(format!("已实时新建隧道「{}」，立即生效，无需重启", p.name));
+        return Ok(t!(
+            format!("已实时新建隧道「{}」，立即生效，无需重启", p.name),
+            format!("Tunnel \"{}\" created live and takes effect immediately, no restart needed", p.name)
+        ));
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = backend::add_proxy(&staged, &p).map_err(|e| format!("{e:#}"))?;
-    Ok("已加入暂存列表，点右上角的保存按钮写入目标".to_string())
+    Ok(t!(
+        "已加入暂存列表，点右上角的保存按钮写入目标",
+        "Added to the staged list; click Save (top right) to write it to the target"
+    ))
 }
 
 #[tauri::command]
@@ -873,14 +979,23 @@ async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<St
         let name2 = name.clone();
         blocked(move || store_delete(&ep2, &name2)).await?;
         return Ok(if shadowed(&name) {
-            format!("已实时删除「{name}」；配置文件里还有同名条目，store 撤掉后它会重新生效")
+            t!(
+                format!("已实时删除「{name}」；配置文件里还有同名条目，store 撤掉后它会重新生效"),
+                format!("\"{name}\" deleted live; the config file still has an entry with this name, which becomes effective again now that the store entry is gone")
+            )
         } else {
-            format!("已实时删除隧道「{name}」")
+            t!(
+                format!("已实时删除隧道「{name}」"),
+                format!("Tunnel \"{name}\" deleted live")
+            )
         });
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = remove_proxy(&staged, &name).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已从暂存配置移除「{name}」，点右上角的保存按钮写入目标"))
+    Ok(t!(
+        format!("已从暂存配置移除「{name}」，点右上角的保存按钮写入目标"),
+        format!("\"{name}\" removed from the staged config; click Save (top right) to write it to the target")
+    ))
 }
 
 /// 改一条隧道：store 条目直接改（立即生效），文件条目仍只动暂存区
@@ -902,25 +1017,34 @@ async fn update_proxy_cmd(
         .iter()
         .find(|(c, _)| c.name == original)
         .cloned()
-        .ok_or_else(|| format!("未找到隧道 {original}"))?;
+        .ok_or_else(|| t!(
+            format!("未找到隧道 {original}"),
+            format!("Tunnel {original} not found")
+        ))?;
     if cur.1 == "store" {
         let (_, ep) = active_endpoint(&state)?;
         let ep2 = ep.clone();
         let p2 = p.clone();
         if p.name == original {
             blocked(move || store_update(&ep2, &p2)).await?;
-            return Ok(format!("已实时改动隧道「{original}」，立即生效"));
+            return Ok(t!(
+                format!("已实时改动隧道「{original}」，立即生效"),
+                format!("Tunnel \"{original}\" updated live and takes effect immediately")
+            ));
         }
         let old = cur.0;
         blocked(move || store_replace(&ep2, &old, &p2)).await?;
-        return Ok(format!(
-            "已实时把「{original}」改名为「{}」，立即生效",
-            p.name
+        return Ok(t!(
+            format!("已实时把「{original}」改名为「{}」，立即生效", p.name),
+            format!("Tunnel \"{original}\" renamed to \"{}\" live and takes effect immediately", p.name)
         ));
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = backend::update_proxy(&staged, &original, &p).map_err(|e| format!("{e:#}"))?;
-    Ok("已改动暂存配置，点右上角的保存按钮写入目标".to_string())
+    Ok(t!(
+        "已改动暂存配置，点右上角的保存按钮写入目标",
+        "Staged config updated; click Save (top right) to write it to the target"
+    ))
 }
 
 /// 把一整篇 TOML 写入活动目标：本机走文件（可选重启 + 失败自动回滚），远端走热加载。
@@ -943,34 +1067,46 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                     .and_then(|s| s.to_str())
                     .unwrap_or("?")
                     .to_string();
-                let mut note = format!("已保存（备份 {bak_name}）");
+                let mut note = t!(
+                    format!("已保存（备份 {bak_name}）"),
+                    format!("Saved (backup {bak_name})")
+                );
                 let mut src = new_src2.clone();
                 if with_restart {
                     restart_instance(&t, managed)?;
                     if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
-                        note.push_str(" · frpc 已重启并就绪");
+                        note.push_str(&t!(
+                            " · frpc 已重启并就绪",
+                            " · frpc restarted and ready"
+                        ));
                     } else {
                         match restore_config_from_backup(&t, &bak) {
                             Ok(restored) => {
                                 restart_instance(&t, managed)?;
                                 if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
                                     src = restored;
-                                    note.push_str(&format!(
-                                        " · 新配置启动失败，已自动回滚到 {bak_name} 并恢复运行"
+                                    note.push_str(&t!(
+                                        format!(" · 新配置启动失败，已自动回滚到 {bak_name} 并恢复运行"),
+                                        format!(" · New config failed to start; auto-rolled back to {bak_name} and restored service")
                                     ));
                                 } else {
-                                    note.push_str(&format!(
-                                        " · 新配置启动失败，已回滚 {bak_name} 但 API 仍未就绪，请查看日志"
+                                    note.push_str(&t!(
+                                        format!(" · 新配置启动失败，已回滚 {bak_name} 但 API 仍未就绪，请查看日志"),
+                                        format!(" · New config failed to start; rolled back to {bak_name} but the API is still not ready, check the logs")
                                     ));
                                 }
                             }
-                            Err(e) => note.push_str(&format!(
-                                " · 已重启但 API 15s 内未就绪，且回滚失败：{e:#}"
+                            Err(e) => note.push_str(&t!(
+                                format!(" · 已重启但 API 15s 内未就绪，且回滚失败：{e:#}"),
+                                format!(" · Restarted but the API was not ready within 15s, and rollback failed: {e:#}")
                             )),
                         }
                     }
                 } else {
-                    note.push_str(" · 未重启，改动需重启后生效");
+                    note.push_str(&t!(
+                        " · 未重启，改动需重启后生效",
+                        " · Not restarted; changes take effect after a restart"
+                    ));
                 }
                 Ok((note, src))
             })
@@ -980,7 +1116,10 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             let new_src2 = new_src.clone();
             blocked(move || -> anyhow::Result<(String, String)> {
                 put_config(&ep, &new_src2)?;
-                Ok((format!("已保存到 {name} 并热加载生效"), new_src2))
+                Ok((t!(
+                    format!("已保存到 {name} 并热加载生效"),
+                    format!("Saved to {name} and hot-reloaded")
+                ), new_src2))
             })
             .await?
         }
@@ -1025,7 +1164,10 @@ fn parse_raw_cmd(raw: String) -> Result<serde_json::Value, String> {
 async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, String> {
     let id = match active_of(&state) {
         Active::Local(id) => id,
-        Active::Remote(_) => return Err("远端目标不支持进程控制，请在目标机上操作".into()),
+        Active::Remote(_) => return Err(t!(
+            "远端目标不支持进程控制，请在目标机上操作",
+            "Process control is not supported for remote targets; operate on the target machine"
+        )),
     };
     let inst = local_instance(&state, &id)?;
     let t = inst.target.clone();
@@ -1036,19 +1178,34 @@ async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, 
             "stop" => stop_instance(&t, managed)?,
             _ => restart_instance(&t, managed)?,
         }
-        let verb = match action.as_str() {
-            "start" => "启动",
-            "stop" => "停止",
-            _ => "重启",
-        };
         if action != "stop" {
             if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
-                Ok(format!("frpc 已{verb}并就绪"))
+                Ok(if action == "start" {
+                    t!(
+                        "frpc 已启动并就绪",
+                        "frpc started and ready"
+                    )
+                } else {
+                    t!(
+                        "frpc 已重启并就绪",
+                        "frpc restarted and ready"
+                    )
+                })
             } else {
-                Ok(format!("已{verb}但 API 15s 内未就绪，查看日志"))
+                Ok(if action == "start" {
+                    t!(
+                        "已启动但 API 15s 内未就绪，查看日志",
+                        "Started, but the API was not ready within 15s; check the logs"
+                    )
+                } else {
+                    t!(
+                        "已重启但 API 15s 内未就绪，查看日志",
+                        "Restarted, but the API was not ready within 15s; check the logs"
+                    )
+                })
             }
         } else {
-            Ok(format!("frpc 已{verb}"))
+            Ok(t!("frpc 已停止", "frpc stopped"))
         }
     })
     .await?;
@@ -1066,7 +1223,10 @@ async fn read_log(
     let id = match active_of(&state) {
         Active::Local(id) => id,
         Active::Remote(_) => {
-            return Err("远端目标不支持查看日志（需 SSH 到目标机查看）".into());
+            return Err(t!(
+                "远端目标不支持查看日志（需 SSH 到目标机查看）",
+                "Log viewing is not supported for remote targets (SSH into the machine to view logs)"
+            ));
         }
     };
     let t = local_instance(&state, &id)?.target;
@@ -1078,7 +1238,10 @@ async fn read_log(
     let page = blocked(move || -> anyhow::Result<serde_json::Value> {
         if !path.exists() {
             return Ok(serde_json::json!({
-                "text": format!("（日志文件不存在：{}）", path.display()),
+                "text": t!(
+                    format!("（日志文件不存在：{}）", path.display()),
+                    format!("(Log file does not exist: {})", path.display())
+                ),
                 "next": 0, "hasMore": false, "size": 0,
             }));
         }
@@ -1098,7 +1261,10 @@ async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String,
     let id = match active_of(&state) {
         Active::Local(id) => id,
         Active::Remote(_) => {
-            return Err("远端设备的文件在它自己的机器上，这里定位不了".into());
+            return Err(t!(
+                "远端设备的文件在它自己的机器上，这里定位不了",
+                "The remote device's files live on that machine; they can't be revealed here"
+            ));
         }
     };
     let t = local_instance(&state, &id)?.target;
@@ -1110,9 +1276,32 @@ async fn reveal_file(state: State<'_, AppState>, kind: String) -> Result<String,
     blocked(move || {
         let s = path.to_string_lossy().to_string();
         reveal_in_finder(&s)?;
-        Ok(format!("已在 Finder 中定位 {s}"))
+        Ok(t!(
+            format!("已在 Finder 中定位 {s}"),
+            format!("Revealed {s} in Finder")
+        ))
     })
     .await
+}
+
+/* ---------------- UI 语言 ---------------- */
+
+#[tauri::command]
+async fn get_lang() -> Result<String, String> {
+    Ok(crate::l10n::is_en().then(|| "en").unwrap_or("zh").to_string())
+}
+
+#[tauri::command]
+async fn set_lang_cmd(lang: String) -> Result<(), String> {
+    if lang != "zh" && lang != "en" {
+        return Err(t!(
+            format!("未知语言 {lang}"),
+            format!("Unknown language {lang}")
+        ));
+    }
+    backend::save_ui_lang(&lang).map_err(|e| format!("{e:#}"))?;
+    crate::l10n::set_lang(&lang);
+    Ok(())
 }
 
 /* ---------------- AI 编排 ---------------- */
@@ -1149,27 +1338,33 @@ async fn save_ai_profile(
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("名字不能为空".into());
+        return Err(t!("名字不能为空", "Name must not be empty"));
     }
     let base = base_url.trim().trim_end_matches('/').to_string();
     if !base.starts_with("http://") && !base.starts_with("https://") {
-        return Err("API 地址要以 http:// 或 https:// 开头".into());
+        return Err(t!(
+            "API 地址要以 http:// 或 https:// 开头",
+            "API base URL must start with http:// or https://"
+        ));
     }
     if model.trim().is_empty() {
-        return Err("模型名不能为空".into());
+        return Err(t!("模型名不能为空", "Model name must not be empty"));
     }
     let mut profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
     let original = original.trim();
     if let Some(idx) = profiles.iter().position(|p| p.name == name) {
         if profiles[idx].name != original {
-            return Err(format!("已有同名配置「{name}」"));
+            return Err(t!(
+                format!("已有同名配置「{name}」"),
+                format!("A config named \"{name}\" already exists")
+            ));
         }
     }
     let key = api_key.trim();
     let mut default = backend::load_ai_default();
     if let Some(pos) = profiles.iter().position(|p| p.name == original) {
         if original.is_empty() {
-            return Err("名字不能为空".into());
+            return Err(t!("名字不能为空", "Name must not be empty"));
         }
         // 编辑：非空 key 覆盖，留空保留旧 key
         let old_key = profiles[pos].api_key.clone();
@@ -1194,7 +1389,10 @@ async fn save_ai_profile(
         default = name.clone();
     }
     backend::save_ai_profiles(&profiles, &default).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已保存模型配置「{name}」"))
+    Ok(t!(
+        format!("已保存模型配置「{name}」"),
+        format!("Model config \"{name}\" saved")
+    ))
 }
 
 #[tauri::command]
@@ -1204,14 +1402,20 @@ async fn remove_ai_profile(name: String) -> Result<String, String> {
     let before = profiles.len();
     profiles.retain(|p| p.name != name);
     if profiles.len() == before {
-        return Err(format!("没有名为「{name}」的配置"));
+        return Err(t!(
+            format!("没有名为「{name}」的配置"),
+            format!("No config named \"{name}\"")
+        ));
     }
     let mut default = backend::load_ai_default();
     if default == name {
         default = profiles.first().map(|p| p.name.clone()).unwrap_or_default();
     }
     backend::save_ai_profiles(&profiles, &default).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("已删除模型配置「{name}」"))
+    Ok(t!(
+        format!("已删除模型配置「{name}」"),
+        format!("Model config \"{name}\" deleted")
+    ))
 }
 
 #[tauri::command]
@@ -1219,10 +1423,16 @@ async fn set_ai_default(name: String) -> Result<String, String> {
     let name = name.trim();
     let profiles = backend::load_ai_profiles().map_err(|e| format!("{e:#}"))?;
     if !profiles.iter().any(|p| p.name == name) {
-        return Err(format!("没有名为「{name}」的配置"));
+        return Err(t!(
+            format!("没有名为「{name}」的配置"),
+            format!("No config named \"{name}\"")
+        ));
     }
     backend::save_ai_profiles(&profiles, name).map_err(|e| format!("{e:#}"))?;
-    Ok(format!("使用「{name}」"))
+    Ok(t!(
+        format!("使用「{name}」"),
+        format!("Now using \"{name}\"")
+    ))
 }
 
 /// 连通性测试 + 拉模型列表。编辑已有配置时 key 留空 = 用已存的 key 去试
@@ -1230,7 +1440,10 @@ async fn set_ai_default(name: String) -> Result<String, String> {
 async fn ai_models_cmd(base_url: String, api_key: String, profile: String) -> Result<serde_json::Value, String> {
     let base = base_url.trim().trim_end_matches('/').to_string();
     if !base.starts_with("http://") && !base.starts_with("https://") {
-        return Err("API 地址要以 http:// 或 https:// 开头".into());
+        return Err(t!(
+            "API 地址要以 http:// 或 https:// 开头",
+            "API base URL must start with http:// or https://"
+        ));
     }
     let mut key = api_key.trim().to_string();
     let profile = profile.trim();
@@ -1263,14 +1476,20 @@ async fn ai_generate_cmd(
     };
     let cfg = profiles.iter().find(|p| p.name == want).cloned();
     let Some(cfg) = cfg else {
-        return Err("先添加模型配置，并选一个用于生成".into());
+        return Err(t!(
+            "先添加模型配置，并选一个用于生成",
+            "Add a model config first and pick one for generation"
+        ));
     };
     let prompt = prompt.trim().to_string();
     if prompt.is_empty() {
-        return Err("先描述需求".into());
+        return Err(t!("先描述需求", "Describe your requirement first"));
     }
     if prompt.chars().count() > 2000 {
-        return Err("需求描述太长（上限 2000 字）".into());
+        return Err(t!(
+            "需求描述太长（上限 2000 字）",
+            "Requirement description is too long (max 2000 characters)"
+        ));
     }
     let target = match active_of(&state) {
         Active::Remote(n) => n,
@@ -1304,6 +1523,7 @@ async fn ai_generate_cmd(
 }
 
 fn main() {
+    l10n::set_lang(&backend::load_ui_lang());
     let locals = discover_locals();
     let remotes = load_remotes().unwrap_or_default();
     let active = locals
@@ -1349,6 +1569,8 @@ fn main() {
             proc_cmd,
             read_log,
             reveal_file,
+            get_lang,
+            set_lang_cmd,
             get_ai_cfg,
             save_ai_profile,
             remove_ai_profile,
