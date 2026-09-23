@@ -1,5 +1,7 @@
 # FRP Client
 
+🇨🇳 **中文** · [🇺🇸 English](README.en.md)
+
 > 轻量、高效的 [frp](https://github.com/fatedier/frp) 桌面客户端，用 Rust + Tauri 2 构建。
 
 FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实例**和**远端的 frpc**，替代 frp 自带的 web 控制台。它直接读写 frpc 的 TOML 配置、调用 frpc 的 webServer API，让隧道的新建、修改、删除和生效在一个统一的界面里完成。
@@ -22,7 +24,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 
 ### 隧道编辑
 
-新建 / 编辑共用一个弹窗，常用地址与端口提供预设 chip；字段标签中文，TOML 真实键名以小灰字并排。
+新建 / 编辑共用一个弹窗，常用地址与端口提供预设 chip；字段标签随界面语言（中 / English），TOML 真实键名以小灰字并排。
 
 ![隧道弹窗](docs/screenshots/modal.png)
 
@@ -41,6 +43,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 - **AI 编排**：用自然语言描述需求（"把 3000 用 tcp 映射到 18080，再起一条 http 挂 blog.example.com"），调用所选模型生成隧道草案，逐条确认后才写入当前设备；支持多份 OpenAI 兼容服务配置（内置 DeepSeek / Kimi / 百炼 / Ollama 预设），带连通性测试并可从 `/models` 返回的模型列表下拉选择；API Key 只存本机 `app.toml`，喂给模型的上下文只含隧道公开参数、绝不含 token / 密码
 - **凭据本地化**：设备凭据只存在 `~/.config/frp-client/app.toml`（权限 0600），不上传、不进入配置仓库
 - **日志页**：查看本机 frpc 的 stdout / stderr，按字节区间从文件末尾向前分页加载，「加载更早」逐页追加且无重复 / 遗漏
+- **国际化**：界面支持简体中文与 English，侧边栏底部一键切换、选择持久化到本机 `app.toml`；静态文案走字典、动态文案与后端返回的提示 / 报错全部双语，协议名与 TOML 真实键名（tcp / http / webServer 等）保持原样
 
 ## 平台支持
 
@@ -92,14 +95,14 @@ cargo test --release
 - 单条隧道的新增 / 修改都在弹窗内完成，改哪项存哪项，不做整页重刷
 - 本机专属信息（用量、版本、运行时长）只出现在侧边栏底部一处
 - 远端设备不显示版本（frpc 控制台无版本端点，不引入额外通道）
-- 界面标签中文，TOML / app.toml 真实键名以小灰字并排呈现
+- 界面标签随界面语言（中 / English），TOML / app.toml 真实键名以小灰字并排呈现
 
 ## Roadmap
 
 - [x] 本机 frpc 启停接管（按 `-c` 路径 kill + 重新拉起）
 - [x] 日志分页加载
 - [x] AI 编排：自然语言生成隧道配置草案（逐条确认后应用）
-- [ ] 国际化（当前仅中文）
+- [x] 国际化（中 / English，侧边栏一键切换，选择持久化到本机）
 
 ## 许可证
 
