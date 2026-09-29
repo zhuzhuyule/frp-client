@@ -56,6 +56,12 @@ Create and edit share one dialog, with preset chips for common addresses and por
 
 The Releases page provides three-platform installers built by CI (see `.github/workflows`).
 
+Packages carry a minisign update signature only — no Apple developer certificate, no notarization — so Gatekeeper may complain on the **first** manual install. Prefer dragging the app from the `.dmg` into Applications; if it says the app "is damaged" or "cannot be verified", run this once (built-in automatic updates never need it):
+
+```bash
+xattr -dr com.apple.quarantine /Applications/FRP\ Client.app
+```
+
 ## Build & Development
 
 Prerequisites:
@@ -84,7 +90,7 @@ Shipping updatable builds requires a minisign key pair (the public half is alrea
 cargo tauri signer generate -w ~/.tauri/frp-client.key
 ```
 
-Store the private key (and its password, if any) as repository Secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. CI uses them to sign every package (`.sig`) and to build `latest.json`, which is how clients discover updates. A local `cargo tauri build` without those variables fails at the bundling step because it cannot sign — `cargo tauri dev` and `cargo build --release` are unaffected.
+One repository Secret is enough: `TAURI_SIGNING_PRIVATE_KEY` (the full contents of the private key file). This key was generated without a passphrase, so **do not** set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — leave it empty or omit it entirely; any placeholder value makes CI fail at the signing step with `incorrect updater private key password`. CI signs every package (`.sig`) and builds `latest.json`, which is how clients discover updates. A local `cargo tauri build` without `TAURI_SIGNING_PRIVATE_KEY` fails at bundling because it cannot sign — `cargo tauri dev` and `cargo build --release` are unaffected.
 
 ## How It Works
 

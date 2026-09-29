@@ -56,6 +56,12 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 
 Releases 页面提供 CI 自动构建的三平台安装包（见 `.github/workflows`）。
 
+安装包只有 minisign 更新签名，没有 Apple 开发者证书和公证，所以 **首次** 手动安装时 Gatekeeper 可能拦一下。优先用「从 dmg 拖进 Applications」的方式；若提示"已损坏"或"无法验证开发者"，执行一次即可（应用内置的自动更新不会再触发这个问题）：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/FRP\ Client.app
+```
+
 ## 构建与开发
 
 前置条件：
@@ -84,7 +90,7 @@ cargo test --release
 cargo tauri signer generate -w ~/.tauri/frp-client.key
 ```
 
-把私钥内容（及其口令，若设了）配到仓库的 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。CI 会用它们签出每个包的 `.sig` 并生成 `latest.json`，客户端就是靠这个文件发现更新的。本地 `cargo tauri build` 不设这两个变量时，打包阶段会因为无法签名而失败——日常开发用 `cargo tauri dev` 或 `cargo build --release` 不受影响。
+只需配一个 Secret：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的全部内容）。这把私钥生成时没有设口令，所以**不要**配 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`——留空或完全不配都行，但填了任意占位值都会让 CI 在签名阶段报 `incorrect updater private key password`。CI 用私钥给每个包签出 `.sig` 并生成 `latest.json`，客户端就是靠这个文件发现更新的。本地 `cargo tauri build` 不设 `TAURI_SIGNING_PRIVATE_KEY` 时，打包阶段会因为无法签名而失败——日常开发用 `cargo tauri dev` 或 `cargo build --release` 不受影响。
 
 ## 工作原理
 
