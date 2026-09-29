@@ -8,9 +8,18 @@ use crate::l10n;
 
 // ---------- environment / target discovery ----------
 
+#[cfg(not(windows))]
 pub const DEFAULT_CONFIG_PATH: &str = "/opt/homebrew/etc/frpc/frpc.toml";
+#[cfg(windows)]
+pub const DEFAULT_CONFIG_PATH: &str = "C:\\frp\\frpc.toml";
+#[cfg(not(windows))]
 pub const DEFAULT_LOG_PATH: &str = "/tmp/frpc.log";
+#[cfg(windows)]
+pub const DEFAULT_LOG_PATH: &str = "C:\\frp\\frpc.log";
+#[cfg(not(windows))]
 pub const DEFAULT_ERR_PATH: &str = "/tmp/frpc.err";
+#[cfg(windows)]
+pub const DEFAULT_ERR_PATH: &str = "C:\\frp\\frpc.err";
 pub const DEFAULT_LAUNCHD_LABEL: &str = "com.frp.client";
 pub const DEFAULT_PLIST_PATH: &str = "~/Library/LaunchAgents/com.frp.client.plist";
 
@@ -104,6 +113,7 @@ fn expand_tilde(raw: &str) -> PathBuf {
 }
 
 /// 本机网卡上的地址（`ifconfig -a` 里的 inet 行）
+#[cfg(not(windows))]
 pub fn local_interface_ips() -> Vec<String> {
     let Ok(out) = std::process::Command::new("ifconfig").arg("-a").output() else {
         return Vec::new();
@@ -116,6 +126,45 @@ pub fn local_interface_ips() -> Vec<String> {
             rest.split_whitespace().next().map(|s| s.to_string())
         })
         .collect()
+}
+
+/// Windows：启用中的网卡配置里的 IPv4（CIM，不依赖 ifconfig/netsh）
+#[cfg(windows)]
+pub fn local_interface_ips() -> Vec<String> {
+    let script = "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter \"IPEnabled=True\" \
+                  | ForEach-Object { $_.IPAddress } \
+                  | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' } \
+                  | ConvertTo-Json -Compress";
+    match ps_json(script) {
+        Some(v) => v
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| vec![v])
+            .iter()
+            .filter_map(|s| s.as_str().map(|s| s.to_string()))
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// 跑一段 PowerShell 并把 JSON 输出解析回来（空输出/null → None）
+#[cfg(windows)]
+fn ps_json(script: &str) -> Option<serde_json::Value> {
+    let full = format!(
+        "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;{script}"
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &full])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_start_matches('\u{feff}')
+        .to_string();
+    if text.is_empty() || text == "null" {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(&text).ok()
 }
 
 /// 本机实例的控制台地址：配置里可能写的是别的机器的 IP（那是在那台机器上生成的配置），
@@ -850,14 +899,29 @@ pub struct LocalInstance {
 /// 常见安装位置的 frpc.toml
 pub fn local_config_candidates() -> Vec<PathBuf> {
     let home = home_dir();
-    vec![
+    let mut v = vec![
         PathBuf::from(DEFAULT_CONFIG_PATH),
-        PathBuf::from("/usr/local/etc/frpc/frpc.toml"),
-        PathBuf::from("/etc/frp/frpc.toml"),
         PathBuf::from(home.clone()).join(".config/frpc/frpc.toml"),
         PathBuf::from(home.clone()).join(".config/frpc.toml"),
         PathBuf::from(home).join("frpc.toml"),
-    ]
+    ];
+    #[cfg(not(windows))]
+    v.splice(
+        1..1,
+        [
+            PathBuf::from("/usr/local/etc/frpc/frpc.toml"),
+            PathBuf::from("/etc/frp/frpc.toml"),
+        ],
+    );
+    #[cfg(windows)]
+    v.splice(
+        1..1,
+        [
+            PathBuf::from("C:\\Program Files\\frp\\frpc.toml"),
+            PathBuf::from("C:\\frp\\frpc.toml"),
+        ],
+    );
+    v
 }
 
 fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
@@ -895,6 +959,7 @@ fn config_path_from_args(args: &str) -> Option<PathBuf> {
 }
 
 /// 正在运行的 frpc：(pid, 它用的配置路径)
+#[cfg(not(windows))]
 pub fn running_frpcs() -> Vec<(u32, PathBuf)> {
     let fallback = PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH));
     frpc_pids()
@@ -910,18 +975,35 @@ pub fn running_frpcs() -> Vec<(u32, PathBuf)> {
         .collect()
 }
 
+#[cfg(windows)]
+pub fn running_frpcs() -> Vec<(u32, PathBuf)> {
+    let fallback = PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH));
+    windows_frpc_procs()
+        .into_iter()
+        .map(|(pid, p)| (pid, p.unwrap_or_else(|| fallback.clone())))
+        .collect()
+}
+
 /// LaunchAgent 里监督的那个配置路径（决定哪个实例可被 App 启停）
 pub fn managed_config_path() -> PathBuf {
-    let plist = expand_tilde(&env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH));
-    if let Ok(src) = std::fs::read_to_string(&plist) {
-        for seg in src.split("<string>") {
-            let v = seg.split("</string>").next().unwrap_or("").trim();
-            if v.ends_with(".toml") {
-                return PathBuf::from(v);
+    #[cfg(windows)]
+    {
+        // Windows 没有 LaunchAgent 这套：永不标记为托管，启停一律走 taskkill + 重新拉起
+        return PathBuf::from("__no_launch_agent__");
+    }
+    #[cfg(not(windows))]
+    {
+        let plist = expand_tilde(&env_or("FRPC_PLIST_PATH", DEFAULT_PLIST_PATH));
+        if let Ok(src) = std::fs::read_to_string(&plist) {
+            for seg in src.split("<string>") {
+                let v = seg.split("</string>").next().unwrap_or("").trim();
+                if v.ends_with(".toml") {
+                    return PathBuf::from(v);
+                }
             }
         }
+        PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH))
     }
-    PathBuf::from(env_or("FRPC_CONFIG_PATH", DEFAULT_CONFIG_PATH))
 }
 
 /// 配置读不动时的兜底目标：只能靠用户补全控制台信息
@@ -1009,7 +1091,7 @@ fn field_str(obj: &serde_json::Value, key: &str) -> String {
 }
 
 /// 一个可调 webServer API 的 frpc 实例（本机或远端）
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Endpoint {
     pub base_url: String,
     pub user: String,
@@ -1373,6 +1455,7 @@ pub fn store_replace(e: &Endpoint, original: &ProxyCfg, p: &NewProxy) -> Result<
 }
 
 // ---------- process control (launchd) ----------
+#[cfg(not(windows))]
 pub fn frpc_pids() -> Vec<u32> {
     let Ok(out) = std::process::Command::new("pgrep").arg("-x").arg("frpc").output() else {
         return Vec::new();
@@ -1381,6 +1464,113 @@ pub fn frpc_pids() -> Vec<u32> {
         .lines()
         .filter_map(|l| l.trim().parse().ok())
         .collect()
+}
+
+#[cfg(windows)]
+pub fn frpc_pids() -> Vec<u32> {
+    windows_frpc_procs().into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// Windows：列出所有 frpc.exe 的 (pid, 命令行里 -c 指到的配置路径)
+#[cfg(windows)]
+fn windows_frpc_procs() -> Vec<(u32, Option<PathBuf>)> {
+    let script = "Get-CimInstance Win32_Process -Filter \"Name='frpc.exe'\" \
+                  | Select-Object ProcessId,CommandLine,ExecutablePath \
+                  | ConvertTo-Json -Compress";
+    let Some(v) = ps_json(script) else { return Vec::new() };
+    let items: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_else(|| vec![v]);
+    let mut out = Vec::new();
+    for it in items {
+        let Some(pid) = it.get("ProcessId").and_then(|p| p.as_u64()).map(|p| p as u32) else {
+            continue;
+        };
+        let cmdline = it.get("CommandLine").and_then(|c| c.as_str()).unwrap_or("");
+        // 相对 -c 路径按 frpc.exe 所在目录解析，和 Windows 上进程的实际 cwd 习惯一致
+        let base = it
+            .get("ExecutablePath")
+            .and_then(|e| e.as_str())
+            .and_then(|p| std::path::Path::new(p).parent())
+            .map(|d| d.to_path_buf());
+        out.push((pid, win_config_from_cmdline(cmdline, base.as_deref())));
+    }
+    out
+}
+
+/// 按 Windows 命令行规则切词：双引号包住的算一个参数，`\"` 是转义引号
+#[cfg(windows)]
+fn split_win_cmdline(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_q = false;
+    let mut started = false;
+    let mut cs = cmd.chars().peekable();
+    while let Some(c) = cs.next() {
+        match c {
+            c if !in_q && (c == ' ' || c == '\t') => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            '\\' => {
+                // 反斜slash成对出现在引号前才有转义含义，其余情况原样保留
+                let mut bs = 1usize;
+                while cs.peek() == Some(&'\\') {
+                    bs += 1;
+                    cs.next();
+                }
+                if cs.peek() == Some(&'"') {
+                    cs.next();
+                    for _ in 0..bs / 2 {
+                        cur.push('\\');
+                    }
+                    if bs % 2 == 1 {
+                        cur.push('"'); // 奇数个反斜杠 → 引号被转义，不改变引用状态
+                    } else {
+                        in_q = !in_q; // 偶数个 → 这是正常的引号边界
+                    }
+                    started = true;
+                } else {
+                    for _ in 0..bs {
+                        cur.push('\\');
+                    }
+                    started = true;
+                }
+            }
+            '"' => in_q = !in_q,
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+/// 从 frpc.exe 的完整命令行里取 `-c <path>` / `--config <path>` / `--config=<path>`
+#[cfg(windows)]
+fn win_config_from_cmdline(cmd: &str, exe_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    let toks = split_win_cmdline(cmd);
+    let mut it = toks.iter().map(|s| s.as_str());
+    let raw = loop {
+        let Some(t) = it.next() else { return None };
+        if t == "-c" || t == "--config" || t == "/c" {
+            break it.next()?;
+        }
+        if let Some(v) = t.strip_prefix("--config=") {
+            break v;
+        }
+    };
+    let mut p = PathBuf::from(raw);
+    if p.is_relative() {
+        if let Some(dir) = exe_dir {
+            p = dir.join(p);
+        }
+    }
+    Some(p)
 }
 
 /// 本机进程指标，来自 ps，无需额外依赖
@@ -1397,7 +1587,20 @@ pub struct ProcStat {
     pub etime: String,
 }
 
+/// 把运行秒数排成 ps 的 etime 格式（[[D-]HH:]MM:SS，前端 fmtEtime 认这个形状）
+#[cfg(windows)]
+fn fmt_etime_secs(secs: u64) -> String {
+    let (d, r) = (secs / 86400, secs % 86400);
+    let (h, m, s) = (r / 3600, (r / 60) % 60, r % 60);
+    if d > 0 {
+        format!("{d}-{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{h:02}:{m:02}:{s:02}")
+    }
+}
+
 /// 整机物理内存 MB；拿不到就返回 0
+#[cfg(not(windows))]
 fn total_mem_mb() -> f64 {
     static TOTAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *TOTAL.get_or_init(|| {
@@ -1412,6 +1615,7 @@ fn total_mem_mb() -> f64 {
     })
 }
 
+#[cfg(not(windows))]
 pub fn proc_stats(pid: u32) -> Option<ProcStat> {
     let out = std::process::Command::new("ps")
         .args(["-o", "%cpu=,%mem=,rss=,etime=,comm=", "-p", &pid.to_string()])
@@ -1443,6 +1647,45 @@ pub fn proc_stats(pid: u32) -> Option<ProcStat> {
         mem_pct,
         cpu_pct,
         etime,
+    })
+}
+
+/// Windows：一次 CIM/Get-Process 查询拿齐用量（powershell 比 wmic 在新系统上更可靠）
+#[cfg(windows)]
+pub fn proc_stats(pid: u32) -> Option<ProcStat> {
+    let script = format!(
+        "$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
+         $c=Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\"; \
+         $os=Get-CimInstance Win32_OperatingSystem; \
+         if($p -and $c){{[pscustomobject]@{{ \
+           Name=$p.ProcessName; Path=$c.ExecutablePath; WS=$p.WorkingSet64; \
+           CPU=$p.CPU; Up=[math]::Round(((Get-Date)-$c.CreationDate).TotalSeconds); \
+           TotalKB=$os.TotalVisibleMemorySize \
+         }} | ConvertTo-Json -Compress}}");
+    let v = ps_json(&script)?;
+    let g = |k: &str| -> f64 { v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0) };
+    let name = v.get("Name").and_then(|x| x.as_str()).unwrap_or("frpc").to_string();
+    let bin = v
+        .get("Path")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let ws_mb = g("WS") / 1048576.0;
+    let total_mb = g("TotalKB") / 1024.0;
+    let mem_pct = if total_mb > 0.0 {
+        ((ws_mb / total_mb) * 10000.0).round() / 100.0
+    } else {
+        0.0
+    };
+    let up = g("Up") as u64;
+    let cpu_pct = if up > 0 { ((g("CPU") / up as f64) * 100.0 * 10.0).round() / 10.0 } else { 0.0 };
+    Some(ProcStat {
+        name,
+        bin,
+        rss_mb: (ws_mb * 10.0).round() / 10.0,
+        mem_pct,
+        cpu_pct,
+        etime: fmt_etime_secs(up),
     })
 }
 
@@ -2490,10 +2733,10 @@ pub fn read_config_file(t: &Target) -> Result<String> {
 /// 不经过 shell，所以这里只挡空串、相对路径和不存在的文件。
 pub fn reveal_in_finder(path: &str) -> Result<()> {
     let p = path.trim();
-    if p.is_empty() || !p.starts_with('/') {
+    if p.is_empty() || !Path::new(p).is_absolute() {
         bail!(l10n::t(
-            "只能在 Finder 里定位一个绝对路径",
-            "Only absolute paths can be revealed in Finder"
+            "只能在文件管理器里定位一个绝对路径",
+            "Only absolute paths can be revealed in the file manager"
         ));
     }
     if !Path::new(p).exists() {
@@ -2502,18 +2745,27 @@ pub fn reveal_in_finder(path: &str) -> Result<()> {
             format!("File does not exist yet: {p}")
         ));
     }
-    let st = std::process::Command::new("open")
-        .arg("-R")
-        .arg(p)
-        .status()
-        .context(l10n::t("调用 open 失败", "Failed to run open"))?;
-    if !st.success() {
-        bail!(l10n::t(
-            "Finder 没能定位到该文件",
-            "Finder could not reveal the file"
-        ));
+    #[cfg(windows)]
+    {
+        // explorer /select 即使成功也常返回非零，不检查退出码
+        let _ = std::process::Command::new("explorer").arg(format!("/select,{p}")).spawn();
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        let st = std::process::Command::new("open")
+            .arg("-R")
+            .arg(p)
+            .status()
+            .context(l10n::t("调用 open 失败", "Failed to run open"))?;
+        if !st.success() {
+            bail!(l10n::t(
+                "Finder 没能定位到该文件",
+                "Finder could not reveal the file"
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub struct LogPage {
@@ -3470,5 +3722,28 @@ maxFailed = 3
         assert!(!st.name.is_empty() && !st.name.contains('/'), "{:?}", st.name);
         assert!(st.rss_mb > 0.0, "{:?}", st);
         assert!(!st.etime.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn win_cmdline_finds_config_path_with_quoted_spaces() {
+        let toks = split_win_cmdline(
+            r#""C:\Program Files\frp\frpc.exe" -c "C:\Program Files\frp\frpc.toml" --verbose"#,
+        );
+        assert_eq!(toks[0], r"C:\Program Files\frp\frpc.exe");
+        assert_eq!(toks.len(), 4);
+        let p = win_config_from_cmdline(r#"frpc.exe -c "C:\frp with space\frpc.toml""#, None).unwrap();
+        assert_eq!(p, std::path::Path::new(r"C:\frp with space\frpc.toml"));
+        // --config= 写法 + 相对路径按 exe 目录解析
+        let p = win_config_from_cmdline(
+            r#"frpc.exe --config=cfg\frpc.toml"#,
+            Some(std::path::Path::new(r"D:\tools\frp")),
+        )
+        .unwrap();
+        assert_eq!(p, std::path::Path::new(r"D:\tools\frp\cfg\frpc.toml"));
+        // 没有 -c 的命令行（比如手工跑的裸 frpc）→ None，由上层回退默认路径
+        assert!(win_config_from_cmdline(r#"frpc.exe"#, None).is_none());
+        assert_eq!(fmt_etime_secs(3741), "01:02:21");
+        assert_eq!(fmt_etime_secs(90061), "1-01:01:01");
     }
 }

@@ -259,8 +259,12 @@ async function afterTargetChange(gen = ++state.loadGen) {
   showSkeletons();
   await loadTargets(gen);
   if (gen !== state.loadGen) return;
-  // 暂存区后台补：远端不可达会吃满超时，但只 toast 一句，不拦切走
-  softCall("refresh_staged", {});
+  // 暂存区后台补：远端不可达会吃满超时，但只 toast 一句，不拦切走。
+  // 补完必须重读一次：set_target 清空了后端暂存，首读赶在它前面就是空屏
+  softCall("refresh_staged", {}).then(() => {
+    if (gen !== state.loadGen) return;
+    loadConfig().then(renderConfigOverview);
+  });
   await loadConfig();
   if (gen !== state.loadGen) return;
   await refreshStatus();
@@ -1110,6 +1114,8 @@ async function saveServer(withRestart) {
     clearStale();
     await loadConfig();
     await refreshStatus();
+    // 后端可能刚把这台设备的控制台端口/凭据自动更新了，页签信息跟着走
+    await loadTargets();
     // 弹窗留在原地，内容换成目标上真正生效的那份
     state.srv.raw = state.cfg.raw || "";
     $("c-raw").value = state.srv.raw;
@@ -1750,7 +1756,10 @@ $("btn-lang").addEventListener("click", async () => {
 
 $("btn-refresh").addEventListener("click", async () => {
   showSkeletons();
-  if (state.page === "config") await loadConfig();
+  if (state.page === "config") {
+    await softCall("refresh_staged", {});
+    await loadConfig();
+  }
   await refreshStatus();
   if (state.page === "logs") await loadLog();
   clearStale();
@@ -1761,6 +1770,12 @@ $("btn-refresh").addEventListener("click", async () => {
   showPage("tunnels");
   showSkeletons();
   await loadTargets();
+  // 后端 main() 的启动播种可能赶不上（比如开机时网络还没就绪），这里后台补一次
+  const gen = state.loadGen;
+  softCall("refresh_staged", {}).then(() => {
+    if (gen !== state.loadGen) return;
+    loadConfig().then(renderConfigOverview);
+  });
   await refreshStatus();
   await loadConfig();
   applyMode();

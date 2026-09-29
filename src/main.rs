@@ -5,8 +5,8 @@ mod l10n;
 
 use backend::{
     apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
-    fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_port_owners,
-    parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
+    fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_console_addr,
+    local_port_owners, parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
     read_config_file, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
     running_frpcs, save_config, save_locals, save_remotes, start_instance, stop_instance,
     store_add, store_delete, store_proxies, store_replace, store_update, tail_page, validate_host,
@@ -286,6 +286,90 @@ fn host_port_of(base_url: &str) -> (String, String) {
     match rest.rsplit_once(':') {
         Some((h, p)) => (h.to_string(), p.to_string()),
         None => (rest.to_string(), String::new()),
+    }
+}
+
+/// 本机实例：从刚生效的基础配置推导新的控制台 endpoint（与 discover_locals 同一口径）
+fn local_ep_from_basics(b: &BackendBasics) -> Endpoint {
+    let port = if b.web_port.trim().is_empty() { "7400" } else { b.web_port.trim() };
+    Endpoint {
+        base_url: format!("http://{}:{}", local_console_addr(&b.web_addr), port),
+        user: b.web_user.clone(),
+        password: b.web_pass.clone(),
+    }
+}
+
+/// 远端：host 是本机够到那台机器的路径，配置里的绑定地址替不了它；只替端口和凭据
+fn remote_ep_from_basics(cur: &Endpoint, b: &BackendBasics) -> Option<Endpoint> {
+    if b.web_addr.trim().is_empty()
+        && b.web_port.trim().is_empty()
+        && b.web_user.trim().is_empty()
+        && b.web_pass.trim().is_empty()
+    {
+        return None;
+    }
+    let (host, old_port) = host_port_of(&cur.base_url);
+    let port = if b.web_port.trim().is_empty() { old_port } else { b.web_port.trim().to_string() };
+    Some(Endpoint {
+        base_url: format!("http://{host}:{port}"),
+        user: b.web_user.clone(),
+        password: b.web_pass.clone(),
+    })
+}
+
+/// 确认新 endpoint 在线后，把它同步进内存里的本机实例（和用户手工覆盖过的那份保存项）
+fn adopt_local_endpoint(state: &AppState, id: &str, ep: &Endpoint) {
+    let changed = {
+        let mut ls = state.locals.lock().unwrap();
+        match ls.iter_mut().find(|x| x.id == id) {
+            Some(l) => {
+                let c = l.target.base_url != ep.base_url
+                    || l.target.user != ep.user
+                    || l.target.password != ep.password;
+                if c {
+                    l.target.base_url = ep.base_url.clone();
+                    l.target.user = ep.user.clone();
+                    l.target.password = ep.password.clone();
+                    l.need_creds = ep.user.is_empty() || ep.password.is_empty();
+                }
+                c
+            }
+            None => false,
+        }
+    };
+    if !changed {
+        return;
+    }
+    // 只有当用户曾为这个实例手工存过地址/凭据时才同步，避免造出一份遮蔽配置文件的旧覆盖
+    let has_override = load_locals()
+        .iter()
+        .any(|s| s.config_path == id && !(s.addr.is_empty() && s.port.is_empty() && s.user.is_empty() && s.password.is_empty()));
+    if has_override {
+        let (addr, port) = host_port_of(&ep.base_url);
+        let (user, pass) = (ep.user.clone(), ep.password.clone());
+        let _ = upsert_local_saved(id, move |s| {
+            s.addr = addr;
+            s.port = port;
+            s.user = user;
+            s.password = pass;
+        });
+    }
+}
+
+/// 同上，远端目标：端口/凭据跟配置走，host 保持不变，并落盘到 app.toml
+fn adopt_remote_endpoint(state: &AppState, name: &str, ep: &Endpoint) {
+    let (host, port) = host_port_of(&ep.base_url);
+    let Ok(pn) = port.parse::<u16>() else { return };
+    let mut guard = state.remotes.lock().unwrap();
+    let Some(r) = guard.iter_mut().find(|x| x.name == name) else {
+        return;
+    };
+    if r.host != host || r.port != pn || r.user != ep.user || r.password != ep.password {
+        r.host = host;
+        r.port = pn;
+        r.user = ep.user.clone();
+        r.password = ep.password.clone();
+        let _ = save_remotes(&guard);
     }
 }
 
@@ -1052,15 +1136,19 @@ async fn update_proxy_cmd(
 /// webServer 检查，而不是按界面提交的表单——裸编辑同样不能写出绑不了的管理接口。
 async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> Result<String, String> {
     let (a, ep) = active_endpoint(state)?;
-    let (note, authoritative) = match a {
+    match a {
         Active::Local(id) => {
             let inst = local_instance(state, &id)?;
             let basics = parse_basics(&new_src).map_err(|e| format!("{e:#}"))?;
             guard_local_basics(state, &id, &basics)?;
             let t = inst.target.clone();
             let managed = inst.managed;
+            // 重启会让 frpc 按新配置重新 bind 控制台：就绪探测必须用新参数推导的 endpoint，
+            // 否则改了密码/端口后必然「探测失败 → 回滚一份其实正确的配置」
+            let ep_new = local_ep_from_basics(&basics);
+            let ep_changed = ep_new != t.endpoint();
             let new_src2 = new_src.clone();
-            blocked(move || -> anyhow::Result<(String, String)> {
+            let (note, src, adopted) = blocked(move || -> anyhow::Result<(String, String, Option<Endpoint>)> {
                 let bak = save_config(&t, &new_src2)?;
                 let bak_name = bak
                     .file_name()
@@ -1072,13 +1160,21 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                     format!("Saved (backup {bak_name})")
                 );
                 let mut src = new_src2.clone();
+                let mut adopted = None;
                 if with_restart {
                     restart_instance(&t, managed)?;
-                    if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
+                    if wait_ready(&ep_new, Duration::from_secs(15)) {
                         note.push_str(&t!(
                             " · frpc 已重启并就绪",
                             " · frpc restarted and ready"
                         ));
+                        if ep_changed {
+                            note.push_str(&t!(
+                                " · 控制台参数已变，本 App 的连接自动更新",
+                                " · Console parameters changed; this app's connection was updated automatically"
+                            ));
+                            adopted = Some(ep_new.clone());
+                        }
                     } else {
                         match restore_config_from_backup(&t, &bak) {
                             Ok(restored) => {
@@ -1107,25 +1203,71 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                         " · 未重启，改动需重启后生效",
                         " · Not restarted; changes take effect after a restart"
                     ));
+                    if ep_changed {
+                        // 没重启时 frpc 不会重新 bind 控制台；除非新参数已经在线，否则连接先不动
+                        if probe_health(&ep_new).is_some() {
+                            note.push_str(&t!(
+                                " · 新控制台已在线，本 App 的连接自动更新",
+                                " · The new console is already live; this app's connection was updated automatically"
+                            ));
+                            adopted = Some(ep_new.clone());
+                        } else {
+                            note.push_str(&t!(
+                                " · 控制台地址/凭据的改动要重启 frpc 才生效，App 暂用旧连接，重启后自动跟上",
+                                " · Console address/credential changes need frpc to restart; the app keeps the old connection and will follow automatically after the restart"
+                            ));
+                        }
+                    }
                 }
-                Ok((note, src))
+                Ok((note, src, adopted))
             })
-            .await?
+            .await?;
+            if let Some(e) = &adopted {
+                adopt_local_endpoint(state, &id, e);
+            }
+            *state.staged.lock().unwrap() = src;
+            Ok(note)
         }
         Active::Remote(name) => {
+            let basics = parse_basics(&new_src).ok();
+            let ep_target = basics
+                .as_ref()
+                .and_then(|b| remote_ep_from_basics(&ep, b))
+                .filter(|e| *e != ep);
             let new_src2 = new_src.clone();
-            blocked(move || -> anyhow::Result<(String, String)> {
+            let label = name.clone();
+            let (note, adopted) = blocked(move || -> anyhow::Result<(String, Option<Endpoint>)> {
                 put_config(&ep, &new_src2)?;
-                Ok((t!(
-                    format!("已保存到 {name} 并热加载生效"),
-                    format!("Saved to {name} and hot-reloaded")
-                ), new_src2))
+                let mut note = t!(
+                    format!("已保存到 {label} 并热加载生效"),
+                    format!("Saved to {label} and hot-reloaded")
+                );
+                let mut adopted = None;
+                if let Some(ne) = ep_target {
+                    // 热加载不会让 frpc 重新 bind 控制台：探得到才换连接，探不到就沿用旧的
+                    if probe_health(&ne).is_some() {
+                        note.push_str(&t!(
+                            " · 控制台参数已变，本 App 的连接自动更新",
+                            " · Console parameters changed; this app's connection was updated automatically"
+                        ));
+                        adopted = Some(ne.clone());
+                    } else {
+                        note.push_str(&t!(
+                            " · 控制台地址/端口的改动要在那台机器重启 frpc 才生效，App 暂用旧连接",
+                            " · Console address/port changes take effect only after frpc restarts on that machine; the app keeps the old connection for now"
+                        ));
+                    }
+                }
+                Ok((note, adopted))
             })
-            .await?
+            .await?;
+            if let Some(e) = &adopted {
+                adopt_remote_endpoint(state, &name, e);
+            }
+            *state.staged.lock().unwrap() = new_src;
+            Ok(note)
         }
-    };
-    *state.staged.lock().unwrap() = authoritative;
-    Ok(note)
+    }
 }
 
 #[tauri::command]
@@ -1179,7 +1321,15 @@ async fn proc_cmd(state: State<'_, AppState>, action: String) -> Result<String, 
             _ => restart_instance(&t, managed)?,
         }
         if action != "stop" {
-            if wait_ready(&t.endpoint(), Duration::from_secs(15)) {
+            // 启动后 frpc 按磁盘上的配置重新 bind 控制台，就绪探测要按那份配置推导，
+            // 内存里的旧 endpoint 可能还是上次改密码前的（当时未重启）
+            let ep = read_config_file(&t)
+                .ok()
+                .and_then(|s| parse_basics(&s).ok())
+                .map(|b| local_ep_from_basics(&b))
+                .filter(|e| *e != t.endpoint())
+                .unwrap_or_else(|| t.endpoint());
+            if wait_ready(&ep, Duration::from_secs(15)) {
                 Ok(if action == "start" {
                     t!(
                         "frpc 已启动并就绪",
@@ -1620,5 +1770,48 @@ mod tests {
             plain.iter().map(|(c, s)| (c.name.as_str(), *s)).collect::<Vec<_>>(),
             vec![("a", "file")]
         );
+    }
+
+    use super::{local_ep_from_basics, remote_ep_from_basics, Endpoint};
+    use crate::backend::Basics;
+
+    fn basics(web_addr: &str, web_port: &str, user: &str, pass: &str) -> Basics {
+        Basics {
+            server_addr: "1.2.3.4".into(),
+            server_port: "7000".into(),
+            token: String::new(),
+            web_addr: web_addr.into(),
+            web_port: web_port.into(),
+            web_user: user.into(),
+            web_pass: pass.into(),
+        }
+    }
+
+    #[test]
+    fn local_endpoint_follows_saved_basics() {
+        let ep = local_ep_from_basics(&basics("127.0.0.1", "17500", "admin", "newpass"));
+        assert_eq!(ep.base_url, "http://127.0.0.1:17500");
+        assert_eq!((ep.user.as_str(), ep.password.as_str()), ("admin", "newpass"));
+        // 配置里写了别的机器的地址时回到回环（与 discover 同口径），端口缺省 7400
+        let ep = local_ep_from_basics(&basics("10.9.8.7", "", "", ""));
+        assert_eq!(ep.base_url, "http://127.0.0.1:7400");
+    }
+
+    #[test]
+    fn remote_endpoint_keeps_host_and_drops_empty_webserver() {
+        let cur = Endpoint {
+            base_url: "http://38.76.189.174:17401".into(),
+            user: "zac".into(),
+            password: "old".into(),
+        };
+        // 没有任何 webServer 信息：不动现有连接
+        assert!(remote_ep_from_basics(&cur, &basics("", "", "", "")).is_none());
+        // 改了凭据没改端口：host/端口保持，凭据跟走
+        let ep = remote_ep_from_basics(&cur, &basics("0.0.0.0", "", "zac", "new")).unwrap();
+        assert_eq!(ep.base_url, "http://38.76.189.174:17401");
+        assert_eq!((ep.user.as_str(), ep.password.as_str()), ("zac", "new"));
+        // 改了端口：跟着换端口，host 不被配置里的绑定地址替换
+        let ep = remote_ep_from_basics(&cur, &basics("127.0.0.1", "17500", "zac", "new")).unwrap();
+        assert_eq!(ep.base_url, "http://38.76.189.174:17500");
     }
 }

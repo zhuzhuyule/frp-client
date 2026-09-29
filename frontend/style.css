@@ -530,6 +530,8 @@ body {
   background: #1c253666; backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
 }
+/* 确认框永远盖在所有弹窗之上：同为 z-index:900 时按 DOM 顺序叠，confirm 在前会被设备配置弹窗压住 */
+#confirm-mask { z-index: 1200; }
 .modal {
   width: 400px; max-width: calc(100vw - 48px);
   background: #fff; border-radius: 14px; padding: 20px 22px;
