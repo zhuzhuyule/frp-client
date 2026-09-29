@@ -44,7 +44,7 @@ Create and edit share one dialog, with preset chips for common addresses and por
 - **Local-only credentials**: device credentials live only in `~/.config/frp-client/app.toml` (mode 0600), never uploaded and never written into your config repo
 - **Logs page**: view local frpc's stdout / stderr, paged backwards from the end of the file by byte ranges, with "load earlier" appending pages without duplicates or gaps
 - **Internationalization**: the UI ships in Simplified Chinese and English, switched with one click via the globe button in the sidebar and persisted to the local `app.toml`; static strings go through a dictionary while dynamic strings and all backend toasts/errors are bilingual; protocol names and real TOML key names (tcp / http / webServer, etc.) are intentionally left untranslated
-- **Self-updating app**: on startup it silently reads `latest.json` from the GitHub Release; when a newer version exists, an "Update now" action appears in the sidebar — download, minisign signature verification, replace, relaunch. Running frpc tunnels are untouched (macOS uses `.app.tar.gz`, Windows the NSIS `.exe`, Linux the AppImage)
+- **Self-updating app**: on startup it silently reads `latest.json` from the GitHub Release; when a newer version exists, an "Update now" action appears in the sidebar — download, minisign signature verification, replace, relaunch. Running frpc tunnels are untouched. Nothing to configure for users (details in [Auto-update explained](docs/auto-update.en.md))
 
 ## Platform Support
 
@@ -56,11 +56,7 @@ Create and edit share one dialog, with preset chips for common addresses and por
 
 The Releases page provides three-platform installers built by CI (see `.github/workflows`).
 
-Packages carry a minisign update signature only — no Apple developer certificate, no notarization — so Gatekeeper may complain on the **first** manual install. Prefer dragging the app from the `.dmg` into Applications; if it says the app "is damaged" or "cannot be verified", run this once (built-in automatic updates never need it):
-
-```bash
-xattr -dr com.apple.quarantine /Applications/FRP\ Client.app
-```
+Packages carry a minisign update signature only — no Apple developer certificate, no notarization — so Gatekeeper may block the **first** manual install on macOS; the built-in automatic update path is unaffected. Workaround in [Auto-update explained](docs/auto-update.en.md).
 
 ## Build & Development
 
@@ -83,14 +79,7 @@ cargo test --release
 
 The frontend is a zero-build static page (`frontend/`, vanilla JS + CSS) — no Node.js toolchain required.
 
-Shipping updatable builds requires a minisign key pair (the public half is already in `plugins.updater.pubkey` inside `tauri.conf.json`):
-
-```bash
-# run once, only if you need a fresh key; lose the private key and every installed client stops receiving updates
-cargo tauri signer generate -w ~/.tauri/frp-client.key
-```
-
-One repository Secret is enough: `TAURI_SIGNING_PRIVATE_KEY` (the full contents of the private key file). This key was generated without a passphrase, so **do not** set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — leave it empty or omit it entirely; any placeholder value makes CI fail at the signing step with `incorrect updater private key password`. CI signs every package (`.sig`) and builds `latest.json`, which is how clients discover updates. A local `cargo tauri build` without `TAURI_SIGNING_PRIVATE_KEY` fails at bundling because it cannot sign — `cargo tauri dev` and `cargo build --release` are unaffected.
+Releasing needs no manual signing and no local bundling: `git tag vX.Y.Z && git push origin vX.Y.Z`, and CI builds all three platforms, signs, publishes the Release with `latest.json`. Key setup and the signing gotchas live in part 2 of [Auto-update explained](docs/auto-update.en.md).
 
 ## How It Works
 

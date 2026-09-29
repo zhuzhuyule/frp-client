@@ -44,7 +44,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 - **凭据本地化**：设备凭据只存在 `~/.config/frp-client/app.toml`（权限 0600），不上传、不进入配置仓库
 - **日志页**：查看本机 frpc 的 stdout / stderr，按字节区间从文件末尾向前分页加载，「加载更早」逐页追加且无重复 / 遗漏
 - **国际化**：界面支持简体中文与 English，侧边栏底部一键切换、选择持久化到本机 `app.toml`；静态文案走字典、动态文案与后端返回的提示 / 报错全部双语，协议名与 TOML 真实键名（tcp / http / webServer 等）保持原样
-- **App 自动更新**：启动时静默读一次 GitHub Release 上的 `latest.json`，有新版本就在侧边栏给出「立即更新」，下载 → minisign 验签 → 替换 → 自动重启，全程不碰正在运行的 frpc 隧道（macOS 用 `.app.tar.gz`、Windows 用 NSIS `.exe`、Linux 用 AppImage）
+- **App 自动更新**：启动时静默读一次 GitHub Release 上的 `latest.json`，有新版本就在侧边栏给出「立即更新」，下载 → minisign 验签 → 替换 → 自动重启，全程不碰正在运行的 frpc 隧道。使用者零配置（细节见 [自动更新说明](docs/auto-update.md)）
 
 ## 平台支持
 
@@ -56,11 +56,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 
 Releases 页面提供 CI 自动构建的三平台安装包（见 `.github/workflows`）。
 
-安装包只有 minisign 更新签名，没有 Apple 开发者证书和公证，所以 **首次** 手动安装时 Gatekeeper 可能拦一下。优先用「从 dmg 拖进 Applications」的方式；若提示"已损坏"或"无法验证开发者"，执行一次即可（应用内置的自动更新不会再触发这个问题）：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/FRP\ Client.app
-```
+安装包没有 Apple 开发者证书和公证，所以 macOS **首次**手动安装可能被 Gatekeeper 拦一下；内置的自动更新不受影响。处置办法见 [自动更新说明](docs/auto-update.md)。
 
 ## 构建与开发
 
@@ -83,14 +79,7 @@ cargo test --release
 
 前端是零构建的静态页面（`frontend/`，原生 JS + CSS），不需要 Node.js 工具链。
 
-发布带自动更新能力的包需要一把 minisign 签名密钥（公钥已写进 `tauri.conf.json` 的 `plugins.updater.pubkey`）：
-
-```bash
-# 只在需要新密钥时执行一次；私钥丢了，已装出去的客户端就再也收不到更新
-cargo tauri signer generate -w ~/.tauri/frp-client.key
-```
-
-只需配一个 Secret：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的全部内容）。这把私钥生成时没有设口令，所以**不要**配 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`——留空或完全不配都行，但填了任意占位值都会让 CI 在签名阶段报 `incorrect updater private key password`。CI 用私钥给每个包签出 `.sig` 并生成 `latest.json`，客户端就是靠这个文件发现更新的。本地 `cargo tauri build` 不设 `TAURI_SIGNING_PRIVATE_KEY` 时，打包阶段会因为无法签名而失败——日常开发用 `cargo tauri dev` 或 `cargo build --release` 不受影响。
+发版不需要手动签名、不需要本地打包：`git tag vX.Y.Z && git push origin vX.Y.Z`，CI 自动三平台构建、签名并发布带 `latest.json` 的 Release。密钥准备与签名相关的坑写在 [自动更新说明](docs/auto-update.md) 的第二部分。
 
 ## 工作原理
 
