@@ -44,6 +44,7 @@ Create and edit share one dialog, with preset chips for common addresses and por
 - **Local-only credentials**: device credentials live only in `~/.config/frp-client/app.toml` (mode 0600), never uploaded and never written into your config repo
 - **Logs page**: view local frpc's stdout / stderr, paged backwards from the end of the file by byte ranges, with "load earlier" appending pages without duplicates or gaps
 - **Internationalization**: the UI ships in Simplified Chinese and English, switched with one click via the globe button in the sidebar and persisted to the local `app.toml`; static strings go through a dictionary while dynamic strings and all backend toasts/errors are bilingual; protocol names and real TOML key names (tcp / http / webServer, etc.) are intentionally left untranslated
+- **Self-updating app**: on startup it silently reads `latest.json` from the GitHub Release; when a newer version exists, an "Update now" action appears in the sidebar — download, minisign signature verification, replace, relaunch. Running frpc tunnels are untouched (macOS uses `.app.tar.gz`, Windows the NSIS `.exe`, Linux the AppImage)
 
 ## Platform Support
 
@@ -75,6 +76,15 @@ cargo test --release
 ```
 
 The frontend is a zero-build static page (`frontend/`, vanilla JS + CSS) — no Node.js toolchain required.
+
+Shipping updatable builds requires a minisign key pair (the public half is already in `plugins.updater.pubkey` inside `tauri.conf.json`):
+
+```bash
+# run once, only if you need a fresh key; lose the private key and every installed client stops receiving updates
+cargo tauri signer generate -w ~/.tauri/frp-client.key
+```
+
+Store the private key (and its password, if any) as repository Secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. CI uses them to sign every package (`.sig`) and to build `latest.json`, which is how clients discover updates. A local `cargo tauri build` without those variables fails at the bundling step because it cannot sign — `cargo tauri dev` and `cargo build --release` are unaffected.
 
 ## How It Works
 

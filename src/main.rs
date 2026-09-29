@@ -4,7 +4,8 @@ mod backend;
 mod l10n;
 
 use backend::{
-    apply_basics, bin_version, binary_upgraded, check_local_console_addr, discover_locals,
+    apply_basics, bin_version, binary_upgraded, check_local_bind_addr, check_local_console_addr,
+    console_addr_warning, discover_locals,
     fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_console_addr,
     local_port_owners, parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
     read_config_file, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
@@ -18,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Active {
@@ -230,7 +232,7 @@ fn guard_local_basics(
     id: &str,
     b: &BackendBasics,
 ) -> Result<(), String> {
-    check_local_console_addr(&b.web_addr).map_err(|e| format!("{e:#}"))?;
+    check_local_bind_addr(&b.web_addr).map_err(|e| format!("{e:#}"))?;
     let port = b.web_port.trim();
     let clash = |host: &str, p: &str| -> bool {
         host.eq_ignore_ascii_case(b.web_addr.trim()) && !port.is_empty() && p == port
@@ -627,6 +629,39 @@ async fn check_update(current: String) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "version": version, "url": url, "current": cur, "hasUpdate": has_update,
     }))
+}
+
+/// App 自身的更新检查：读 GitHub Release 上的 latest.json（minisign 验签）。
+/// 启动时静默调一次，失败由前端吞掉，所以这里的错误只会在手动检查时露出来。
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let updater = app.updater().map_err(|e| format!("{e}"))?;
+    match updater.check().await {
+        Ok(Some(p)) => Ok(Some(serde_json::json!({ "version": p.version, "notes": p.body }))),
+        Ok(None) => Ok(None),
+        Err(e) => {
+            // 前端会把它静默吞掉（离线、或老 Release 里根本没有 latest.json 时不该打扰用户），
+            // 但没别的通道能看出接线是否通了，这里留一行 stderr。
+            eprintln!("[updater] check failed: {e}");
+            Err(format!("{e}"))
+        }
+    }
+}
+
+/// 下载并安装新版本，然后重启。Windows 由安装器接管退出，macOS/Linux 装完自己重启。
+#[tauri::command]
+async fn install_app_update(app: tauri::AppHandle) -> Result<String, String> {
+    let updater = app.updater().map_err(|e| format!("{e}"))?;
+    let package = updater
+        .check()
+        .await
+        .map_err(|e| format!("{e}"))?
+        .ok_or_else(|| t!("已经是最新版本", "Already on the latest version"))?;
+    package
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("{e}"))?;
+    app.restart()
 }
 
 #[tauri::command]
@@ -1147,6 +1182,8 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             // 否则改了密码/端口后必然「探测失败 → 回滚一份其实正确的配置」
             let ep_new = local_ep_from_basics(&basics);
             let ep_changed = ep_new != t.endpoint();
+            // 绑 0.0.0.0 不是错误（隧道不会断），所以不拦，只在保存结果里提一句
+            let addr_warn = console_addr_warning(&basics.web_addr);
             let new_src2 = new_src.clone();
             let (note, src, adopted) = blocked(move || -> anyhow::Result<(String, String, Option<Endpoint>)> {
                 let bak = save_config(&t, &new_src2)?;
@@ -1159,6 +1196,9 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                     format!("已保存（备份 {bak_name}）"),
                     format!("Saved (backup {bak_name})")
                 );
+                if let Some(w) = &addr_warn {
+                    note.push_str(&t!(format!(" · 提示：{w}"), format!(" · Note: {w}")));
+                }
                 let mut src = new_src2.clone();
                 let mut adopted = None;
                 if with_restart {
@@ -1692,6 +1732,7 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_targets,
@@ -1700,6 +1741,8 @@ fn main() {
             refresh_staged,
             add_local,
             check_update,
+            check_app_update,
+            install_app_update,
             rename_local,
             remove_local,
             rescan_locals,

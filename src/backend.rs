@@ -181,10 +181,11 @@ pub fn local_console_addr(configured: &str) -> String {
     }
 }
 
-/// 本机实例的 webServer.addr 只允许写这台机器能绑定的地址。
+/// 本机实例的 webServer.addr 里「能不能绑」的硬校验。
 /// 曾经把另一台机器的控制台地址写进本机配置，热加载时看不出问题（不会重新 bind），
 /// 下一次真实重启才 bind 失败，整机隧道全部下线。
-pub fn check_local_console_addr(addr: &str) -> Result<()> {
+/// 0.0.0.0 / :: 不在这里拦：它们绑得上、隧道不会断，只是把管理接口开放出去 → 交给 [`console_addr_warning`]。
+pub fn check_local_bind_addr(addr: &str) -> Result<()> {
     let a = addr.trim();
     if a.is_empty() {
         bail!(l10n::t(
@@ -192,13 +193,7 @@ pub fn check_local_console_addr(addr: &str) -> Result<()> {
             "Console address must not be empty; use 127.0.0.1 for this machine"
         ));
     }
-    if a == "0.0.0.0" || a == "::" {
-        bail!(l10n::t(
-            format!("控制台不能绑定 {a}：会把 frpc 的管理接口暴露给整个局域网"),
-            format!("Console must not bind {a}: that exposes frpc's admin API to the whole LAN")
-        ));
-    }
-    if a.starts_with("127.") || a.eq_ignore_ascii_case("localhost") {
+    if a == "0.0.0.0" || a == "::" || a.starts_with("127.") || a.eq_ignore_ascii_case("localhost") {
         return Ok(());
     }
     if local_interface_ips().iter().any(|ip| ip == a) {
@@ -208,6 +203,26 @@ pub fn check_local_console_addr(addr: &str) -> Result<()> {
         format!("{a} 不是本机地址：这里要填的是这台机器上 frpc 绑定的控制台地址，本机一般用 127.0.0.1"),
         format!("{a} is not a local address: set it to the console address frpc binds on this machine (usually 127.0.0.1)")
     ))
+}
+
+/// 全接口监听不算错，但值得在保存后提一句。返回 Some 时由调用方拼进提示里。
+pub fn console_addr_warning(addr: &str) -> Option<String> {
+    let a = addr.trim();
+    (a == "0.0.0.0" || a == "::").then(|| {
+        l10n::t(
+            format!("{a} 会把控制台开放在所有网卡上，局域网内任何机器都能拿账号密码连它"),
+            format!("{a} opens the console on every network interface; any host on the LAN can reach it with these credentials"),
+        )
+    })
+}
+
+/// App 自己要拿去**连接**的地址：这里 0.0.0.0 没有意义（连不出去），所以按错误处理。
+pub fn check_local_console_addr(addr: &str) -> Result<()> {
+    check_local_bind_addr(addr)?;
+    if let Some(w) = console_addr_warning(addr) {
+        bail!(w);
+    }
+    Ok(())
 }
 
 // ---------- remote targets (app-owned config) ----------
@@ -3206,13 +3221,19 @@ maxFailed = 3
 
     #[test]
     fn local_console_addr_must_be_bindable() {
-        assert!(check_local_console_addr("127.0.0.1").is_ok());
-        assert!(check_local_console_addr("localhost").is_ok());
-        // 这两个都会让 frpc 重启时要么全机下线要么暴露管理接口
+        assert!(check_local_bind_addr("127.0.0.1").is_ok());
+        assert!(check_local_bind_addr("localhost").is_ok());
+        assert!(check_local_bind_addr("").is_err());
+        // 另一台机器的 IP：热加载不报错，下次真实重启才 bind 失败 → 必须硬拦
+        assert!(check_local_bind_addr("203.0.113.9").is_err());
+        // 0.0.0.0 绑得上、隧道不会断，所以只提示不拦
+        assert!(check_local_bind_addr("0.0.0.0").is_ok());
+        assert!(console_addr_warning("0.0.0.0").is_some());
+        assert!(console_addr_warning("::").is_some());
+        assert!(console_addr_warning("127.0.0.1").is_none());
+        // 但拿它当"本 App 去连的地址"就是错的
         assert!(check_local_console_addr("0.0.0.0").is_err());
-        assert!(check_local_console_addr("").is_err());
-        // 另一台机器的 IP：热加载不报错，下次真实重启才 bind 失败
-        assert!(check_local_console_addr("203.0.113.9").is_err());
+        assert!(check_local_console_addr("127.0.0.1").is_ok());
     }
 
     #[test]

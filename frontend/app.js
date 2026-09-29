@@ -587,6 +587,7 @@ function loadingGuard() {
 const SIDE_ICONS = {
   monitor: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M9 20h6M12 16v4" /></svg>',
   tag: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20.6 13.2 13.2 20.6a2 2 0 0 1-2.8 0L3.4 13.6a2 2 0 0 1-.6-1.4V4.4A1 1 0 0 1 3.8 3.4h7.8a2 2 0 0 1 1.4.6l7.6 7.6a2 2 0 0 1 0 1.6Z" /><circle cx="8" cy="8" r="1.4" /></svg>',
+  download: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M4 20h16" /></svg>',
 };
 
 /* 本机状态行：电脑图标 + "名字 ● 运行时长"，绿/红点紧跟在名字之后，时间在其后 */
@@ -672,6 +673,59 @@ async function checkUpdate() {
     r.hasUpdate ? "info" : "ok"
   );
   renderSideMetrics(state.status);
+}
+
+/* ---------- App 自身的版本更新（GitHub Release 上的 latest.json，minisign 验签）---------- */
+/* 与上面那条「检查 frpc 更新」是两件事：frpc 是被管理的程序，这里是本 App。 */
+let checkingAppUpdate = false;
+async function checkAppUpdate() {
+  if (checkingAppUpdate) return;
+  checkingAppUpdate = true;
+  let r = null;
+  try {
+    r = await invoke("check_app_update");
+  } catch (e) {
+    r = null; // 离线 / 老版本 Release 里没有 latest.json：不作声
+  }
+  checkingAppUpdate = false;
+  state.appUpdate = r || null;
+  renderSideAppUpdate();
+  if (r) toast(tx(`FRP Client 有新版本 ${r.version}`, `FRP Client ${r.version} is available`), "info");
+}
+
+function renderSideAppUpdate() {
+  const box = $("side-appupdate");
+  const u = state.appUpdate;
+  if (!u) {
+    box.innerHTML = "";
+    return;
+  }
+  const tip = tx(`下载并安装 ${u.version}，本 App 会自动重启`, `Download ${u.version}; the app restarts itself`);
+  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="ss-ico">${SIDE_ICONS.download}</span>`
+    + `<span class="sm-v warn">v${esc(u.version)}</span>`
+    + `<button id="btn-appupdate" class="btn xs primary" title="${esc(tip)}">${tx("立即更新", "Update")}</button>`
+    + `</div>`;
+  $("btn-appupdate").addEventListener("click", installAppUpdate);
+}
+
+async function installAppUpdate() {
+  const u = state.appUpdate;
+  if (!u) return;
+  const body = tx(`下载 ${u.version} 并替换当前版本，期间本 App 会退出并自动重启。正在运行的 frpc 隧道不受影响。`,
+    `Download ${u.version} and replace the current build. The app quits briefly and relaunches. Running frpc tunnels are not affected.`)
+    + (u.notes ? `\n\n${u.notes}` : "");
+  if (!(await showConfirm(tx("更新 FRP Client", "Update FRP Client"), body, tx("下载并更新", "Download & update")))) return;
+  const btn = $("btn-appupdate");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = tx("下载中…", "Downloading…");
+  }
+  // 成功时这条 invoke 不会返回：后端装完直接重启整个 App
+  await call("install_app_update", {});
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = tx("立即更新", "Update");
+  }
 }
 
 /* ---------- status rendering ---------- */
@@ -1781,6 +1835,7 @@ $("btn-refresh").addEventListener("click", async () => {
   applyMode();
   clearStale();
   loadAiCfg();
+  checkAppUpdate(); // 启动时查一次本 App 自己的更新（失败不作声）
   let tick = 0;
   setInterval(() => {
     if (document.hidden || state.busy || state.polling) return;

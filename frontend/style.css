@@ -126,6 +126,9 @@ body {
 .sm-ver { display: flex; align-items: center; gap: 9px; }
 .sm-v { color: #d7e0ef; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sm-v.warn { color: #fbbf24; }
+/* App 自身的更新提示（侧栏分割线上方）：没有新版本时整块不占位 */
+.side-appupdate { padding: 0 12px 4px; font-size: 11px; }
+.side-appupdate:empty { display: none; }
 /* 语言切换入口：地球 + 目标语言名（中文界面显示 English，英文界面显示 中文），点击互切 */
 .side-lang { display: flex; align-items: center; gap: 9px; margin: 2px 0 0; padding: 0; border: 0; background: transparent; color: var(--side-text); font-size: 11.5px; cursor: pointer; }
 .side-lang:hover { color: #dfe8f6; }

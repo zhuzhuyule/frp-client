@@ -44,6 +44,7 @@ FRP Client 是一个原生桌面应用，用来管理**本机的多个 frpc 实�
 - **凭据本地化**：设备凭据只存在 `~/.config/frp-client/app.toml`（权限 0600），不上传、不进入配置仓库
 - **日志页**：查看本机 frpc 的 stdout / stderr，按字节区间从文件末尾向前分页加载，「加载更早」逐页追加且无重复 / 遗漏
 - **国际化**：界面支持简体中文与 English，侧边栏底部一键切换、选择持久化到本机 `app.toml`；静态文案走字典、动态文案与后端返回的提示 / 报错全部双语，协议名与 TOML 真实键名（tcp / http / webServer 等）保持原样
+- **App 自动更新**：启动时静默读一次 GitHub Release 上的 `latest.json`，有新版本就在侧边栏给出「立即更新」，下载 → minisign 验签 → 替换 → 自动重启，全程不碰正在运行的 frpc 隧道（macOS 用 `.app.tar.gz`、Windows 用 NSIS `.exe`、Linux 用 AppImage）
 
 ## 平台支持
 
@@ -75,6 +76,15 @@ cargo test --release
 ```
 
 前端是零构建的静态页面（`frontend/`，原生 JS + CSS），不需要 Node.js 工具链。
+
+发布带自动更新能力的包需要一把 minisign 签名密钥（公钥已写进 `tauri.conf.json` 的 `plugins.updater.pubkey`）：
+
+```bash
+# 只在需要新密钥时执行一次；私钥丢了，已装出去的客户端就再也收不到更新
+cargo tauri signer generate -w ~/.tauri/frp-client.key
+```
+
+把私钥内容（及其口令，若设了）配到仓库的 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。CI 会用它们签出每个包的 `.sig` 并生成 `latest.json`，客户端就是靠这个文件发现更新的。本地 `cargo tauri build` 不设这两个变量时，打包阶段会因为无法签名而失败——日常开发用 `cargo tauri dev` 或 `cargo build --release` 不受影响。
 
 ## 工作原理
 
