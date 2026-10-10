@@ -4,12 +4,12 @@ mod backend;
 mod l10n;
 
 use backend::{
-    apply_basics, bin_version, binary_upgraded, check_local_bind_addr, check_local_console_addr,
+    apply_basics, apply_remote_config, bin_version, binary_upgraded, check_local_bind_addr, check_local_console_addr,
     console_addr_warning, discover_locals,
     fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_console_addr,
-    local_port_owners, parse_basics, parse_proxies, probe_health, probe_store, proc_stats, put_config,
+    local_port_owners, parse_basics, parse_proxies, probe_health, probe_store, proc_stats,
     read_config_file, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
-    running_frpcs, save_config, save_locals, save_remotes, start_instance, stop_instance,
+    running_frpcs, save_config, save_locals, save_remotes, startup_locked_changes, start_instance, stop_instance,
     store_add, store_delete, store_proxies, store_replace, store_update, tail_page, validate_host,
     version_at_least, wait_ready,
     Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyAdv, ProxyCfg, RemoteTarget,
@@ -1265,6 +1265,12 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
         }
         Active::Remote(name) => {
             let basics = parse_basics(&new_src).ok();
+            // state.staged 在写入成功后才被覆盖，所以此刻它就是"远端正在跑的那一份"
+            let old_basics = parse_basics(&state.staged.lock().unwrap().clone()).ok();
+            let locked = match (&old_basics, &basics) {
+                (Some(o), Some(n)) => startup_locked_changes(o, n),
+                _ => Vec::new(),
+            };
             let ep_target = basics
                 .as_ref()
                 .and_then(|b| remote_ep_from_basics(&ep, b))
@@ -1272,7 +1278,7 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             let new_src2 = new_src.clone();
             let label = name.clone();
             let (note, adopted) = blocked(move || -> anyhow::Result<(String, Option<Endpoint>)> {
-                put_config(&ep, &new_src2)?;
+                apply_remote_config(&ep, &new_src2)?;
                 let mut note = t!(
                     format!("已保存到 {label} 并热加载生效"),
                     format!("Saved to {label} and hot-reloaded")
@@ -1292,6 +1298,19 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
                             " · Console address/port changes take effect only after frpc restarts on that machine; the app keeps the old connection for now"
                         ));
                     }
+                }
+                // webServer.* 由上面那段连接逻辑单独说明，这里只提其余的启动期字段
+                let startup_only: Vec<&'static str> = locked
+                    .iter()
+                    .filter(|k| !k.starts_with("webServer"))
+                    .copied()
+                    .collect();
+                if !startup_only.is_empty() {
+                    let keys = startup_only.join(" / ");
+                    note.push_str(&t!(
+                        format!(" · {keys} 是启动期参数，热加载不会应用：远端仍按旧值在跑，要在那台机器重启 frpc 才生效"),
+                        format!(" · {keys} are startup-only and the reload ignores them: the remote keeps running with the old values until frpc restarts there")
+                    ));
                 }
                 Ok((note, adopted))
             })

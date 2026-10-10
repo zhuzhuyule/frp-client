@@ -1223,6 +1223,9 @@ pub fn fetch_config(e: &Endpoint) -> Result<String> {
 }
 
 /// 热加载新配置（PUT /api/config）。写入前先做 TOML 合法性校验。
+/// ⚠ 实测 0.71.0：这一步**只落盘并换掉内存里的配置文本，不会应用**。
+/// GET /api/config 之后读回来已经是新内容，但 frps 仍按旧 remotePort 监听、
+/// 控制台仍按旧密码鉴权 —— 必须再调 `reload_config` 才真正生效。
 pub fn put_config(e: &Endpoint, toml_src: &str) -> Result<()> {
     toml_src
         .parse::<DocumentMut>()
@@ -1249,6 +1252,71 @@ pub fn put_config(e: &Endpoint, toml_src: &str) -> Result<()> {
             format!("PUT {url} failed (hot reload did not take effect)"),
         )),
     }
+}
+
+/// 触发 frpc 重读它已经拿到的配置（GET /api/reload）。
+/// 实测 0.71.0：这个端点**只接受 GET**，POST/PUT 一律 405；
+/// 生效后 frpc 对 proxies 做 diff（日志 `proxy removed` / `proxy added` / `success reload conf`），
+/// 改动的隧道会在 frps 上重新注册，所以那几条会瞬断 —— 但 `webServer.*` 与
+/// `serverAddr/serverPort/auth.token` 属于启动期参数，reload **不会**重新 bind 也不会重连。
+pub fn reload_config(e: &Endpoint) -> Result<()> {
+    let url = format!("{}/api/reload", e.base_url);
+    match ureq::get(&url)
+        .set("Authorization", &auth_header(e))
+        .timeout(Duration::from_secs(8))
+        .call()
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, resp)) => {
+            Err(store_err(code, &resp.into_string().unwrap_or_default())).with_context(|| l10n::t(
+                "远端拒绝应用新配置",
+                "Remote refused to apply the new config",
+            ))
+        }
+        Err(other) => Err(other).with_context(|| l10n::t(
+            format!("GET {url} 失败（配置未应用）"),
+            format!("GET {url} failed (config not applied)"),
+        )),
+    }
+}
+
+/// 远端整篇生效 = 写入 + 应用，两步缺一不可。
+/// reload 单独报错时不能只说"保存失败"：磁盘上其实已经是新配置了，
+/// 那份配置会在远端下次真实重启时被用上，这个区别决定了用户要不要去救。
+pub fn apply_remote_config(e: &Endpoint, toml_src: &str) -> Result<()> {
+    put_config(e, toml_src)?;
+    reload_config(e).with_context(|| l10n::t(
+        "配置已写入远端，但热加载没成功：改动尚未生效，那台机器下次重启 frpc 时才会用上",
+        "Config written to the remote, but the reload failed: the changes are not live and will apply the next time frpc restarts there",
+    ))
+}
+
+/// 启动期才生效的字段（热加载不会应用）。返回两次配置之间被改过的那些项的 TOML 键名。
+/// 空 vec = 改动全在热加载范围内。
+pub fn startup_locked_changes(old: &Basics, new: &Basics) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if old.server_addr != new.server_addr {
+        v.push("serverAddr");
+    }
+    if old.server_port != new.server_port {
+        v.push("serverPort");
+    }
+    if old.token != new.token {
+        v.push("auth.token");
+    }
+    if old.web_addr != new.web_addr {
+        v.push("webServer.addr");
+    }
+    if old.web_port != new.web_port {
+        v.push("webServer.port");
+    }
+    if old.web_user != new.web_user {
+        v.push("webServer.user");
+    }
+    if old.web_pass != new.web_pass {
+        v.push("webServer.password");
+    }
+    v
 }
 
 // ---------- store API (frpc >= 0.68 且配置了 store.path) ----------
@@ -2942,6 +3010,44 @@ pub fn tail_page(path: &Path, offset: u64, size: u64) -> Result<LogPage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 实测契约（隔离 frps+frpc 0.71.0）：改隧道的 remotePort 会被 /api/reload 应用，
+    /// 改 auth.token / webServer.* 不会 —— 这条测试锁住这个区分。
+    #[test]
+    fn startup_locked_changes_only_flags_reload_ignored_keys() {
+        const OLD: &str = r#"
+serverAddr = "1.2.3.4"
+serverPort = 7000
+auth.token = "tok"
+webServer.addr = "127.0.0.1"
+webServer.port = 7400
+webServer.user = "zac"
+webServer.password = "pw"
+
+[[proxies]]
+name = "a"
+type = "tcp"
+localPort = 22
+remotePort = 6000
+"#;
+        let base = parse_basics(OLD).unwrap();
+
+        let tunnel_only = parse_basics(&OLD.replace("remotePort = 6000", "remotePort = 6100")).unwrap();
+        assert!(startup_locked_changes(&base, &tunnel_only).is_empty());
+
+        let console_only = parse_basics(&OLD.replace(r#"webServer.password = "pw""#, r#"webServer.password = "pw2""#)).unwrap();
+        assert_eq!(startup_locked_changes(&base, &console_only), vec!["webServer.password"]);
+
+        let both = parse_basics(
+            &OLD.replace(r#"auth.token = "tok""#, r#"auth.token = "new""#)
+                .replace("webServer.port = 7400", "webServer.port = 7401"),
+        )
+        .unwrap();
+        assert_eq!(
+            startup_locked_changes(&base, &both),
+            vec!["auth.token", "webServer.port"]
+        );
+    }
 
     const SAMPLE: &str = r#"# 顶部注释要保留
 serverAddr = "1.2.3.4"
