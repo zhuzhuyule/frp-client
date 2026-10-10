@@ -934,12 +934,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                std::process::Command::new("date")
-                    .args(["-r", &secs.to_string(), "+%Y-%m-%d %H:%M:%S"])
-                    .output()
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| s.trim().to_string())
+                Some(backend::fmt_local_time(secs))
             })
             .unwrap_or_default();
         (list, pid, saved, stats, ver, owners)

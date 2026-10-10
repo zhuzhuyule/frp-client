@@ -153,10 +153,10 @@ fn ps_json(script: &str) -> Option<serde_json::Value> {
     let full = format!(
         "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;{script}"
     );
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &full])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &full]);
+    no_window(&mut cmd);
+    let out = cmd.output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout)
         .trim()
         .trim_start_matches('\u{feff}')
@@ -1720,9 +1720,10 @@ pub fn bin_version(bin: &str) -> Option<String> {
         return hit;
     }
     let got = if std::path::Path::new(bin).is_file() {
-        std::process::Command::new(bin)
-            .arg("--version")
-            .output()
+        let mut cmd = std::process::Command::new(bin);
+        cmd.arg("--version");
+        no_window(&mut cmd);
+        cmd.output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| {
@@ -1941,14 +1942,48 @@ pub fn local_port_owners() -> std::collections::HashMap<u16, ServiceInfo> {
         .collect()
 }
 
+/// Windows 上 GUI 进程（`windows_subsystem = "app"`）spawn 任何控制台程序，系统都会现开一个
+/// 控制台窗口；PowerShell 的 `-WindowStyle Hidden` 来不及（窗口已经建好了），只有
+/// CREATE_NO_WINDOW 能阻止它每轮轮询闪一下。
+#[cfg(windows)]
+fn no_window(c: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+
+#[cfg(not(windows))]
+fn no_window(_c: &mut std::process::Command) {}
+
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
-    std::process::Command::new(cmd)
-        .args(args)
-        .output()
+    let mut c = std::process::Command::new(cmd);
+    c.args(args);
+    no_window(&mut c);
+    c.output()
         .with_context(|| l10n::t(
             format!("执行 {cmd} {args:?} 失败"),
             format!("Failed to run {cmd} {args:?}"),
         ))
+}
+
+/// 把 unix 秒格式成本地时区的 `YYYY-MM-DD HH:MM:SS`。
+/// POSIX 有 `date -r`；Windows 上这条命令根本不存在（`date` 只是 cmd 的内建），得走 PowerShell。
+pub fn fmt_local_time(secs: u64) -> String {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "[DateTimeOffset]::FromUnixTimeSeconds({secs}).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') | ConvertTo-Json -Compress"
+        );
+        return ps_json(&script)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+    }
+    #[cfg(not(windows))]
+    run("date", &["-r", &secs.to_string(), "+%Y-%m-%d %H:%M:%S"])
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn check(ok: bool, stderr: &[u8], what: &str) -> Result<()> {
@@ -2007,17 +2042,74 @@ pub fn launchd_bootstrapped(label: &str) -> bool {
     }
 }
 
-/// 定位 frpc 二进制：FRPC_BIN 覆盖 → 常见安装位置 → PATH 查询
-pub fn frpc_binary() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("FRPC_BIN") {
-        let p = PathBuf::from(&v);
-        if p.exists() {
-            return Some(p);
+/// Windows 上补 `.exe` 后缀再试一次：GUI 启动时用户手写的路径和 `where frpc` 都可能不带后缀。
+#[cfg(windows)]
+fn with_exe_suffix(p: PathBuf) -> Option<PathBuf> {
+    if p.is_file() {
+        return Some(p);
+    }
+    if p.extension().is_some() {
+        return None;
+    }
+    let mut e = p;
+    e.set_extension("exe");
+    e.is_file().then_some(e)
+}
+
+#[cfg(not(windows))]
+fn with_exe_suffix(p: PathBuf) -> Option<PathBuf> {
+    p.is_file().then_some(p)
+}
+
+/// 不依赖 PATH 的常见安装位置
+fn frpc_candidate_paths() -> Vec<PathBuf> {
+    // 只有 Windows 分支往里追加
+    #[allow(unused_mut)]
+    let mut v = vec![
+        PathBuf::from("/opt/homebrew/bin/frpc"),
+        PathBuf::from("/usr/local/bin/frpc"),
+        PathBuf::from("/usr/bin/frpc"),
+    ];
+    #[cfg(windows)]
+    {
+        let home = PathBuf::from(home_dir());
+        v.extend([
+            PathBuf::from(r"C:\frp\frpc"),
+            PathBuf::from(r"C:\Program Files\frp\frpc"),
+            home.join(r"frp\frpc"),
+            home.join("frpc"),
+        ]);
+        // 和 App 放在同一个目录里也很常见（解压即用）
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                v.push(dir.join("frpc"));
+            }
         }
     }
-    for c in ["/opt/homebrew/bin/frpc", "/usr/local/bin/frpc", "/usr/bin/frpc"] {
-        let p = PathBuf::from(c);
-        if p.exists() {
+    v
+}
+
+/// 正在运行的 frpc.exe 的镜像路径 —— 它在跑就说明二进制在这儿，不需要 PATH 参与
+#[cfg(windows)]
+fn running_frpc_exe_path() -> Option<PathBuf> {
+    let script = "Get-CimInstance Win32_Process -Filter \"Name='frpc.exe'\" \
+                  | ForEach-Object { $_.ExecutablePath } \
+                  | Select-Object -First 1 | ConvertTo-Json -Compress";
+    ps_json(script).and_then(|v| v.as_str().map(PathBuf::from)).filter(|p| p.is_file())
+}
+
+/// 定位 frpc 二进制：FRPC_BIN 覆盖 → 常见安装位置 → PATH 查询 → 运行中实例的镜像路径
+pub fn frpc_binary() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("FRPC_BIN") {
+        let v = v.trim().trim_matches('"');
+        if !v.is_empty() {
+            if let Some(p) = with_exe_suffix(PathBuf::from(v)) {
+                return Some(p);
+            }
+        }
+    }
+    for c in frpc_candidate_paths() {
+        if let Some(p) = with_exe_suffix(c) {
             return Some(p);
         }
     }
@@ -2025,12 +2117,20 @@ pub fn frpc_binary() -> Option<PathBuf> {
     let found = run("where", &["frpc"]).ok();
     #[cfg(not(windows))]
     let found = run("sh", &["-c", "command -v frpc"]).ok();
-    found
+    if let Some(p) = found
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .filter(|p| p.exists())
+        .and_then(with_exe_suffix)
+    {
+        return Some(p);
+    }
+    #[cfg(windows)]
+    if let Some(p) = running_frpc_exe_path() {
+        return Some(p);
+    }
+    None
 }
 
 fn process_alive(pid: u32) -> bool {
@@ -2076,8 +2176,8 @@ pub fn start_process(t: &Target) -> Result<()> {
     use std::process::Stdio;
     let bin = frpc_binary()
         .ok_or_else(|| anyhow::anyhow!(l10n::t(
-            "找不到 frpc 二进制，请先安装 frpc 或设置 FRPC_BIN 环境变量",
-            "frpc binary not found; install frpc or set the FRPC_BIN environment variable"
+            "找不到 frpc 二进制：请安装 frpc，或把 frpc 所在目录加入 PATH，或设置 FRPC_BIN 指向它",
+            "frpc binary not found: install frpc, add its folder to PATH, or point FRPC_BIN at it"
         )))?;
     let out = std::fs::OpenOptions::new()
         .create(true)
@@ -2095,12 +2195,14 @@ pub fn start_process(t: &Target) -> Result<()> {
             format!("打开日志 {} 失败", t.err_path.display()),
             format!("Failed to open log {}", t.err_path.display()),
         ))?;
-    std::process::Command::new(bin)
-        .args(["-c", &t.config_path.to_string_lossy()])
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(["-c", &t.config_path.to_string_lossy()])
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .spawn()
+        .stderr(Stdio::from(err));
+    // frpc 是控制台程序，不拦一下会在桌面上留一个黑窗口
+    no_window(&mut cmd);
+    cmd.spawn()
         .context(l10n::t("启动 frpc 失败", "Failed to start frpc"))?;
     Ok(())
 }
@@ -2159,6 +2261,15 @@ pub fn wait_ready(e: &Endpoint, timeout: Duration) -> bool {    let deadline = s
 // ---------- config file write (backup + atomic rename) ----------
 
 fn timestamp() -> String {
+    // Windows 上 `date` 不是可执行程序（只是 cmd 内建），拿不到它就意味着每次备份都叫
+    // `.bak-unknown`、互相覆盖，回滚只剩最后一份。
+    #[cfg(windows)]
+    {
+        ps_json("Get-Date -Format 'yyyyMMdd-HHmmss' | ConvertTo-Json -Compress")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown".into())
+    }
+    #[cfg(not(windows))]
     std::process::Command::new("date")
         .arg("+%Y%m%d-%H%M%S")
         .output()
