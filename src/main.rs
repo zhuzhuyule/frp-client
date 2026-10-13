@@ -650,6 +650,13 @@ async fn check_update(current: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// App 自身的版本号（打包时写进 tauri.conf.json 的那份）。
+/// 侧栏要拿它和下面那行 frpc 的版本分开显示——两个数字长一样，不标注就没人分得清。
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 /// App 自身的更新检查：读 GitHub Release 上的 latest.json（minisign 验签）。
 /// 启动时静默调一次，失败由前端吞掉，所以这里的错误只会在手动检查时露出来。
 #[tauri::command]
@@ -1780,6 +1787,7 @@ fn main() {
             add_local,
             check_update,
             check_app_update,
+            app_version,
             install_app_update,
             rename_local,
             remove_local,

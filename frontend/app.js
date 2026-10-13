@@ -26,6 +26,10 @@ const state = {
   storeMode: false,
   // 最近一次「检查更新」的结果：{ version, at }，只在用户点过之后才有值
   latest: null,
+  // 本 App 自己的版本（来自打包配置，和上面那行 frpc 的版本是两码事）
+  appVer: "",
+  // 最近一次 App 更新检查：{ at, failed }；failed 时按钮照旧可点，但要说清没查到不等于最新
+  appChecked: null,
   editing: null,
   // 服务器设置弹窗里的草稿：raw 是唯一真相，UI 表单只是它的一个视图
   srv: { tab: "ui", raw: "", dirty: false },
@@ -587,7 +591,6 @@ function loadingGuard() {
 const SIDE_ICONS = {
   monitor: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M9 20h6M12 16v4" /></svg>',
   tag: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20.6 13.2 13.2 20.6a2 2 0 0 1-2.8 0L3.4 13.6a2 2 0 0 1-.6-1.4V4.4A1 1 0 0 1 3.8 3.4h7.8a2 2 0 0 1 1.4.6l7.6 7.6a2 2 0 0 1 0 1.6Z" /><circle cx="8" cy="8" r="1.4" /></svg>',
-  download: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M4 20h16" /></svg>',
 };
 
 /* 本机状态行：电脑图标 + "名字 ● 运行时长"，绿/红点紧跟在名字之后，时间在其后 */
@@ -642,6 +645,7 @@ function renderSideMetrics(s) {
     : tx(`${L.at} 检查过，已是最新`, `Checked at ${L.at}, up to date`);
   if (st.upgraded) tip = tx("磁盘上的二进制已更新，重启 frpc 后才生效", "Binary on disk updated — restart frpc for it to take effect");
   box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="ss-ico">${SIDE_ICONS.tag}</span>`
+    + `<span class="sm-k">frpc</span>`
     + `<span class="sm-v${updatable || st.upgraded ? " warn" : ""}">${esc(ver)}</span>`
     + `<button id="btn-update" class="btn xs primary" title="${esc(tip)}">${tx("检查更新", "Check update")}</button>`
     + `</div>`;
@@ -678,34 +682,60 @@ async function checkUpdate() {
 /* ---------- App 自身的版本更新（GitHub Release 上的 latest.json，minisign 验签）---------- */
 /* 与上面那条「检查 frpc 更新」是两件事：frpc 是被管理的程序，这里是本 App。 */
 let checkingAppUpdate = false;
-async function checkAppUpdate() {
+async function checkAppUpdate(manual) {
   if (checkingAppUpdate) return;
   checkingAppUpdate = true;
+  const btn = $("btn-appupdate");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = tx("检查中…", "Checking…");
+  }
   let r = null;
+  let failed = false;
   try {
     r = await invoke("check_app_update");
   } catch (e) {
-    r = null; // 离线 / 老版本 Release 里没有 latest.json：不作声
+    failed = true; // 离线 / GitHub 不可达 / 老 Release 里没有 latest.json
+    r = null;
   }
   checkingAppUpdate = false;
   state.appUpdate = r || null;
+  state.appChecked = { at: nowHM(), failed };
   renderSideAppUpdate();
   if (r) toast(tx(`FRP Client 有新版本 ${r.version}`, `FRP Client ${r.version} is available`), "info");
+  else if (manual && failed)
+    toast(tx("检查更新失败：现在连不上 GitHub，稍后再试", "Update check failed: GitHub is unreachable, try again later"), "err");
+  else if (manual)
+    toast(tx(`FRP Client v${state.appVer || "?"} 已是最新`, `FRP Client v${state.appVer || "?"} is up to date`), "ok");
 }
 
 function renderSideAppUpdate() {
   const box = $("side-appupdate");
   const u = state.appUpdate;
-  if (!u) {
+  const c = state.appChecked;
+  const ver = state.appVer;
+  if (!ver && !u) {
     box.innerHTML = "";
     return;
   }
-  const tip = tx(`下载并安装 ${u.version}，本 App 会自动重启`, `Download ${u.version}; the app restarts itself`);
-  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="ss-ico">${SIDE_ICONS.download}</span>`
-    + `<span class="sm-v warn">v${esc(u.version)}</span>`
-    + `<button id="btn-appupdate" class="btn xs primary" title="${esc(tip)}">${tx("立即更新", "Update")}</button>`
+  // 三个状态各有各的说法：没查到 ≠ 已是最新，这里不能含糊过去
+  const tip = u
+    ? tx(`当前 v${ver} · 可更新到 v${u.version}，下载并安装后本 App 会自动重启，正在运行的隧道不受影响`,
+         `Now v${ver} · v${u.version} available; installing restarts the app, running tunnels are unaffected`)
+    : c && c.failed
+      ? tx(`${c.at} 试过，连不上 GitHub 所以没查到；本 App 是 v${ver}`,
+           `Tried at ${c.at} but GitHub was unreachable, so nothing was checked; this app is v${ver}`)
+      : c
+        ? tx(`v${ver} 已是最新 · ${c.at} 检查过`, `v${ver} is up to date · checked at ${c.at}`)
+        : tx(`本 App v${ver} · 联网查 GitHub 上的最新版`, `This app is v${ver} · check GitHub for a newer release`);
+  box.innerHTML = `<div class="sm-ver" title="${esc(tip)}"><span class="ss-ico">${SIDE_ICONS.tag}</span>`
+    + `<span class="sm-k">App</span>`
+    + `<span class="sm-v${u ? " warn" : ""}">v${esc(ver)}</span>`
+    + `<button id="btn-appupdate" class="btn xs ${u ? "primary" : "ghost"}" title="${esc(tip)}">`
+    + `${u ? esc(tx(`更新到 ${u.version}`, `Update to ${u.version}`)) : tx("检查更新", "Check update")}</button>`
     + `</div>`;
-  $("btn-appupdate").addEventListener("click", installAppUpdate);
+  const btn = $("btn-appupdate");
+  btn.addEventListener("click", u ? installAppUpdate : () => checkAppUpdate(true));
 }
 
 async function installAppUpdate() {
@@ -722,10 +752,7 @@ async function installAppUpdate() {
   }
   // 成功时这条 invoke 不会返回：后端装完直接重启整个 App
   await call("install_app_update", {});
-  if (btn) {
-    btn.disabled = false;
-    btn.textContent = tx("立即更新", "Update");
-  }
+  renderSideAppUpdate(); // 没重启成功（下载失败等）：把按钮恢复成当前状态该有的样子
 }
 
 /* ---------- status rendering ---------- */
@@ -1854,7 +1881,13 @@ $("btn-refresh").addEventListener("click", async () => {
   applyMode();
   clearStale();
   loadAiCfg();
-  checkAppUpdate(); // 启动时查一次本 App 自己的更新（失败不作声）
+  try {
+    state.appVer = await invoke("app_version");
+  } catch (e) {
+    state.appVer = ""; // 拿不到就不显示那行，别编一个版本号
+  }
+  renderSideAppUpdate();
+  checkAppUpdate(); // 启动时查一次本 App 自己的更新（失败不作声，按钮上会留着"没查到"的状态）
   let tick = 0;
   setInterval(() => {
     if (document.hidden || state.busy || state.polling) return;
