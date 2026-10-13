@@ -738,12 +738,23 @@ function renderSideAppUpdate() {
   btn.addEventListener("click", u ? installAppUpdate : () => checkAppUpdate(true));
 }
 
+/* latest.json 的 notes 就是整篇 Release 正文（markdown、中英双语，几千字）。
+   原样塞进确认框会把「下载并更新」挤出屏幕，所以只取当前语言段的第一条。 */
+function releaseNotesSummary(md, limit = 200) {
+  const half = String(md || "").split(/^\s*-{3,}\s*$/m);
+  const sec = ((LANG === "en" ? half[1] : half[0]) || half[0] || "");
+  const line = sec.split(/\r?\n/).find((l) => /^\s*[-*]\s/.test(l)) || "";
+  const s = line.replace(/^\s*[-*]\s+/, "").replace(/\*\*/g, "").replace(/`/g, "").trim();
+  return s.length > limit ? s.slice(0, limit).trimEnd() + "…" : s;
+}
+
 async function installAppUpdate() {
   const u = state.appUpdate;
   if (!u) return;
+  const sum = releaseNotesSummary(u.notes);
   const body = tx(`下载 ${u.version} 并替换当前版本，期间本 App 会退出并自动重启。正在运行的 frpc 隧道不受影响。`,
     `Download ${u.version} and replace the current build. The app quits briefly and relaunches. Running frpc tunnels are not affected.`)
-    + (u.notes ? `\n\n${u.notes}` : "");
+    + (sum ? `\n\n${tx(`这个版本：${sum}`, `In this version: ${sum}`)}` : "");
   if (!(await showConfirm(tx("更新 FRP Client", "Update FRP Client"), body, tx("下载并更新", "Download & update")))) return;
   const btn = $("btn-appupdate");
   if (btn) {

@@ -545,7 +545,7 @@ body {
 }
 .modal-title { font-size: 15px; font-weight: 700; color: var(--text-strong); }
 #server-mask .modal-title, #device-mask .modal-title { display: flex; align-items: center; gap: 10px; }
-.modal-body { margin-top: 8px; font-size: 12.5px; line-height: 1.7; color: var(--text); }
+.modal-body { margin-top: 8px; font-size: 12.5px; line-height: 1.7; color: var(--text); max-height: 46vh; overflow-y: auto; }
 .modal-foot { margin-top: 18px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .foot-hint { font-size: 11px; color: var(--faint); align-self: center; }
 .modal.wide { width: 460px; }
