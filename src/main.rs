@@ -208,6 +208,25 @@ fn merge_effective(file: Vec<ProxyCfg>, store: &[ProxyCfg]) -> Vec<(ProxyCfg, &'
     out
 }
 
+/// 配置视图为什么是空的。`effective_proxies` 为了"frpc 停着也能编辑"刻意吞掉解析失败，
+/// 隧道列表却来自 `/api/status` —— 两份数据一旦对不上，界面上就是"隧道明明在跑、
+/// 点编辑却说找不到"。所以这里把原因显式带回给前端，让它能说清楚而不是演成哑故障。
+fn staged_problem(state: &AppState) -> Option<String> {
+    let staged = state.staged.lock().unwrap().clone();
+    if staged.trim().is_empty() {
+        return Some(t!(
+            "读不到这台设备的配置内容（本机：文件路径无效或没权限；远端：它的控制台没有开放配置接口）",
+            "The config content of this device can't be read (local: invalid path or no permission; remote: its console doesn't expose the config endpoint)"
+        ));
+    }
+    parse_proxies(&staged).err().map(|e| {
+        t!(
+            format!("配置内容解析失败，不是 frpc 认识的 TOML：{e:#}"),
+            format!("Failed to parse the config — it isn't TOML frpc recognizes: {e:#}")
+        )
+    })
+}
+
 /// 活动目标的生效隧道定义 + 各自来源。非 store 目标退化为纯文件视图（与旧行为一致）。
 /// 这里刻意吞掉探测错误：frpc 停着的时候配置页仍要能编辑。
 async fn effective_proxies(state: &AppState) -> (Vec<(ProxyCfg, &'static str)>, bool) {
@@ -943,6 +962,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     .map_err(|e| e.to_string())?;
 
     let (effective, store_mode) = effective_proxies(&state).await;
+    let cfg_problem = staged_problem(&state);
     let cfgs: HashMap<String, (ProxyCfg, &'static str)> = effective
         .into_iter()
         .map(|(c, src)| (c.name.clone(), (c, src)))
@@ -999,6 +1019,9 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         "pid": pid.unwrap_or(0),
         "apiReachable": api_reachable,
         "storeMode": store_mode,
+        // 隧道行来自 /api/status，编辑弹窗取自配置视图；配置读不到时两者会对不上，
+        // 这个字段就是那句"为什么点编辑会失败"的解释
+        "configError": cfg_problem,
         "proxyCount": proxies.len(),
         "runningCount": running_count,
         "proxies": proxies,
@@ -1042,7 +1065,8 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         })
         .collect();
     let basics = parse_basics(&staged).ok().as_ref().map(basics_json);
-    Ok(serde_json::json!({ "raw": staged, "basics": basics, "proxies": proxies, "storeMode": store_mode }))
+    Ok(serde_json::json!({ "raw": staged, "basics": basics, "proxies": proxies, "storeMode": store_mode,
+        "configError": staged_problem(&state) }))
 }
 
 #[tauri::command]
@@ -1870,5 +1894,28 @@ mod tests {
         // 改了端口：跟着换端口，host 不被配置里的绑定地址替换
         let ep = remote_ep_from_basics(&cur, &basics("127.0.0.1", "17500", "zac", "new")).unwrap();
         assert_eq!(ep.base_url, "http://38.76.189.174:17500");
+    }
+
+    use super::{staged_problem, Active, AppState};
+
+    fn state_with(staged: &str) -> AppState {
+        AppState {
+            locals: std::sync::Mutex::new(Vec::new()),
+            remotes: std::sync::Mutex::new(Vec::new()),
+            active: std::sync::Mutex::new(Active::Local("x".into())),
+            staged: std::sync::Mutex::new(staged.into()),
+        }
+    }
+
+    #[test]
+    fn staged_problem_names_the_reason_behind_uneditable_tunnels() {
+        // 隧道列表来自 /api/status，编辑表单来自配置视图；配置视图空掉时必须把原因说清楚，
+        // 否则前端只剩"未在当前目标里找到该隧道"这种演不出所以然的死路。
+        let empty = staged_problem(&state_with("   \n")).unwrap();
+        let broken = staged_problem(&state_with("[ssh]\ntype = tcp\n")).unwrap();
+        assert!(!empty.is_empty() && !broken.is_empty());
+        // "读不到" 和 "解析失败" 必须是两句不同的话，用户才知道下一步改哪边
+        assert_ne!(empty, broken);
+        assert!(staged_problem(&state_with("serverAddr = \"1.2.3.4\"\n")).is_none());
     }
 }

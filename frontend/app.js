@@ -820,6 +820,9 @@ function renderTunnels() {
     ? tx("暂无隧道 · 管理 API 不可达或 frpc 未配置代理", "No tunnels · admin API unreachable or frpc has no proxies configured")
     : tx("未识别到任何设备 · 点标签行的「＋ 新建设备」扫描本机或登记远端", "No devices detected · use \"+ New device\" in the tab row to scan local instances or add a remote");
   if (s) renderOverview(s);
+  // 配置读不到时，每一行的编辑按钮都点不动 —— 把原因挂在 title 上，
+  // 用户不必逐行点击才发现整台设备都改不了
+  const cfgErr = (state.cfg && state.cfg.configError) || (s && s.configError) || "";
   const box = $("tunnel-rows");
   box.innerHTML = rows
     .map((p) => {
@@ -839,7 +842,7 @@ function renderTunnels() {
         <div class="col-remote t-two" title="${esc((p.domains || "").trim() || (p.remoteAddr || "").trim())}">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
         <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? tx("运行中", "Running") : esc(p.status)}</span></span>
         <span class="col-edit">
-          <button class="btn icon edit" data-name="${esc(p.name)}" title="${tx("编辑该隧道", "Edit this tunnel")}">${ICO_EDIT}</button>
+          <button class="btn icon edit" data-name="${esc(p.name)}" title="${esc(cfgErr || tx("编辑该隧道", "Edit this tunnel"))}">${ICO_EDIT}</button>
           <button class="btn icon danger del" data-name="${esc(p.name)}" title="${tx("删除该隧道", "Delete this tunnel")}">${ICO_DEL}</button>
         </span>
       </div>`;
@@ -1029,17 +1032,24 @@ function renderConfigOverview() {
   $("btn-edit-device").disabled = !t || state.busy;
   const edit = $("btn-edit-server");
   edit.disabled = !t || !hasCfg || state.busy;
-  edit.title = !hasCfg
-    ? tx("读不到这台设备的配置：可能不在线、地址与凭据不对，或它的配置文件本身有问题——切到这台设备时弹出的报错里有 frpc 给出的原因",
-         "Can't read this device's config: it may be offline, the address/credentials may be wrong, or its config file itself has a problem — the error toast shown when switching to it carries frpc's reason")
-    : tx("改这台 frpc 自己的配置（服务端、控制台绑定、隧道）",
-         "Edit this frpc's own config (server, console binding, tunnels)");
-  $("ov-foot-note").textContent = hasCfg
+  // 后端给出的原因（读不到 / 解析失败）比这段通用猜测有用，优先用它
+  const whyCfg = state.cfg.configError || (s && s.configError) || "";
+  edit.title = whyCfg
+    ? whyCfg
+    : hasCfg
+      ? tx("改这台 frpc 自己的配置（服务端、控制台绑定、隧道）",
+           "Edit this frpc's own config (server, console binding, tunnels)")
+      : tx("还没读到这台设备的配置，切到它时弹出的报错写了具体原因",
+           "This device's config hasn't been loaded yet — the error toast shown when switching to it states why");
+  $("ov-foot-note").textContent = hasCfg && !whyCfg
     ? ""
-    : t && t.kind === "remote"
-      ? tx("没读到这台设备的配置：切到它时弹出的报错写了具体原因；若是地址或凭据问题，改完「编辑设备连接」后重新点它的标签",
-           "This device's config wasn't loaded: the error toast shown when switching to it states why; if it's an address/credential issue, fix \"Edit device connection\" and click its tab again")
-      : "";
+    : whyCfg
+      ? tx(`${whyCfg} · 隧道列表来自 frpc 的运行状态，所以那边看得到、这边改不了`,
+           `${whyCfg} · The tunnel list comes from frpc's live status, which is why you can see them here but not edit them`)
+      : t && t.kind === "remote"
+        ? tx("没读到这台设备的配置：切到它时弹出的报错写了具体原因；若是地址或凭据问题，改完「编辑设备连接」后重新点它的标签",
+             "This device's config wasn't loaded: the error toast shown when switching to it states why; if it's an address/credential issue, fix \"Edit device connection\" and click its tab again")
+        : "";
 }
 
 /* ---------- 服务器设置弹窗：UI 表单 ⇄ 原始 TOML ---------- */
@@ -1262,7 +1272,16 @@ function isLiveEntry(name) {
 function openEditProxy(name) {
   const c = (state.cfg.proxies || []).find((x) => x.name === name);
   if (!c) {
-    toast(tx("未在当前目标里找到该隧道", "Tunnel not found on the current target"), "err");
+    // 隧道行来自 /api/status，编辑要的资料来自配置视图（staged TOML）。两份数据对不上时
+    // 只会剩下一句"找不到该隧道"，用户无从知道是配置读不到 —— 那是完全不同的病根。
+    const why = state.cfg.configError || (state.status || {}).configError;
+    toast(
+      why
+        ? tx(`${why} · 所以这台设备上正在运行的隧道暂时无法编辑`,
+             `${why} · so the tunnels running on this device can't be edited for now`)
+        : tx("未在当前目标里找到该隧道", "Tunnel not found on the current target"),
+      "err"
+    );
     return;
   }
   const live = isLiveEntry(name);
