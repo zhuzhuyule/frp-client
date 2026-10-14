@@ -25,10 +25,16 @@
     <div class="side-flex"></div>
     <div id="side-usage" class="side-usage"></div>
     <div class="side-foot">
-      <button id="btn-lang" class="side-lang" type="button">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3.5 9h17M3.5 15h17" /></svg>
-        <span class="lang-label">English</span>
-      </button>
+      <div class="side-links">
+        <button id="btn-lang" class="side-lang" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3.5 9h17M3.5 15h17" /></svg>
+          <span class="lang-label">English</span>
+        </button>
+        <button id="btn-net" class="side-lang side-net" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .33 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87.33 1.7 1.7 0 0 0-1 1.47V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.54 1.7 1.7 0 0 0-1.87.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .33-1.87 1.7 1.7 0 0 0-1.47-1H3a2 2 0 1 1 0-4h.11a1.7 1.7 0 0 0 1.54-1.11 1.7 1.7 0 0 0-.33-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.33H9a1.7 1.7 0 0 0 1-1.47V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1 1.47 1.7 1.7 0 0 0 1.87-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.33 1.87V9a1.7 1.7 0 0 0 1.47 1H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.49 1Z" /></svg>
+          <span class="net-label" data-i18n="net.entry">GitHub 加速</span>
+        </button>
+      </div>
       <div id="side-status" class="side-status"><span class="ss-ico"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M9 20h6M12 16v4" /></svg></span><div class="ss-txt"><span class="ss-name" data-i18n="side.statusChecking">检测中…</span><span class="ss-sub" data-i18n="side.statusConnecting">正在连接控制台</span></div></div>
       <div id="side-metrics" class="side-metrics"></div>
       <div id="side-appupdate" class="side-appupdate"></div>
@@ -355,6 +361,33 @@
     </div>
   </div>
 </div>
+  <!-- ============ 弹窗：GitHub 访问加速 ============ -->
+  <div id="net-mask" class="mask hidden">
+    <div class="modal">
+      <div class="modal-title">
+        <span data-i18n="net.title">GitHub 访问加速</span>
+        <span class="flex1"></span>
+        <button id="btn-net-close" class="btn icon sm" data-i18n-title="common.close">✕</button>
+      </div>
+      <div class="pgrid">
+        <label class="field wide"><span><span data-i18n="net.mirror">镜像前缀</span><i class="f-key">githubMirror</i></span>
+          <input id="n-mirror" placeholder="https://mirror.example.com/" spellcheck="false" autocomplete="off" />
+          <span class="presets" id="net-presets"></span>
+        </label>
+      </div>
+      <div class="field wide ai-test-row">
+        <button id="btn-net-test" class="btn sm" data-i18n="net.testBtn">测试这个前缀</button>
+        <span id="net-test-note" class="hint" data-i18n="net.testNote">用带前缀的地址取一次 frp 最新版，验证前缀是否真的通了</span>
+      </div>
+      <div class="hint" data-i18n="net.hint">只影响 App 自己访问 GitHub：查 frpc 最新版、检查和下载 App 更新。填的是「前缀」，完整地址接在它后面，例如 https://github.ofind.cn/https://github.com/…。留空＝直连；镜像不通时会自动落回直连。</div>
+      <div class="modal-foot">
+        <button id="btn-net-clear" class="btn sm" data-i18n="net.clearBtn">恢复直连</button>
+        <span class="flex1"></span>
+        <button id="btn-net-cancel" class="btn sm" data-i18n="common.cancel">取消</button>
+        <button id="btn-net-save" class="btn primary sm" data-i18n="common.save">保存</button>
+      </div>
+    </div>
+  </div>
 <script src="i18n.js"></script>
 </body>
 </html>

@@ -134,6 +134,10 @@ body {
 /* 语言切换入口：地球 + 目标语言名（中文界面显示 English，英文界面显示 中文），点击互切 */
 .side-lang { display: flex; align-items: center; gap: 9px; margin: 2px 0 0; padding: 0; border: 0; background: transparent; color: var(--side-text); font-size: 11.5px; cursor: pointer; }
 .side-lang:hover { color: #dfe8f6; }
+/* 语言 + GitHub 加速两个入口并排；后者用右侧小点表示"当前走的不是直连" */
+.side-links { display: flex; align-items: center; gap: 14px; }
+.side-links .side-lang { margin-right: 0; }
+.side-net.on::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #34d399; flex: none; }
 
 /* ---------- content ---------- */
 .content { flex: 1; display: flex; flex-direction: column; padding: 22px 26px; min-width: 0; }
@@ -330,6 +334,18 @@ body {
 .t-two { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .t-two > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc { font-style: normal; font-size: 11px; color: var(--muted); }
+/* 值 + 行尾快捷图标（复制 / 打开 / 定位）：图标常驻但压到最浅， hover 才提亮 */
+.t-line { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: visible; }
+.t-line > span, .t-line > i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.quick { display: inline-flex; gap: 1px; flex: none; opacity: .5; }
+.quick:hover { opacity: 1; }
+.qi { display: inline-flex; align-items: center; padding: 1px 2px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.qi:hover { color: var(--primary); background: var(--primary-soft); }
+.qi svg { display: block; width: 12px; height: 12px; }
+/* 还没保存生效的改动：设备上在跑的旧值划线，第二行给新值 */
+.struck { text-decoration: line-through; color: var(--faint) !important; }
+.p-new { font-size: 11.5px; color: var(--warn); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-new::before { content: "→ "; color: var(--faint); }
 .r-main { font-size: 12.5px; color: var(--text); }
 .r-sub { font-size: 11px; color: var(--muted); }
 .err-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
@@ -364,6 +380,9 @@ body {
 .tag.udp { background: #f3e8ff; color: #7e22ce; }
 .tag.live { background: var(--warn-soft); color: var(--warn); }
 .tag.err { background: var(--danger-soft); color: var(--danger); }
+/* 待生效 / 待删除：虚线框，和"实时"那种已经落地的实心标签区分开 */
+.tag.pend { background: transparent; border: 1px dashed #f0c48a; color: var(--warn); padding: 0 5px; }
+.tag.pend.del { border-color: #f2b8b5; color: var(--danger); }
 
 .badge {
   display: inline-flex; align-items: center; justify-content: center;
@@ -372,6 +391,7 @@ body {
 }
 .badge.run { background: var(--ok-soft); color: var(--ok); }
 .badge.stop { background: var(--danger-soft); color: var(--danger); }
+.badge.pend { background: var(--warn-soft); color: var(--warn); }
 
 .ico.tcp { background: linear-gradient(135deg, #4d82f5, #2560d8); }
 .ico.http { background: linear-gradient(135deg, #22c55e, #15803d); }
@@ -409,6 +429,7 @@ body {
 .field input:focus, .field select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .hint { font-size: 11px; color: var(--faint); }
 .hint.warn { color: var(--warn); margin-top: 8px; }
+.hint.ok { color: var(--ok); }
 
 /* ---------- 配置预览：选中设备的状态条 + 连接/配置两栏 ---------- */
 /* tab 行下面这条：设备现在跑成什么样（只读，改东西去下面两个弹窗） */

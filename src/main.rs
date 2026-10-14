@@ -4,15 +4,16 @@ mod backend;
 mod l10n;
 
 use backend::{
-    apply_basics, apply_remote_config, bin_version, binary_upgraded, check_local_bind_addr, check_local_console_addr,
-    console_addr_warning, discover_locals,
-    fetch_config, fetch_status, latest_frp_release, load_locals, load_remotes, local_console_addr,
-    local_port_owners, parse_basics, parse_proxies, probe_health, probe_store, proc_stats,
-    read_config_file, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
-    running_frpcs, save_config, save_locals, save_remotes, startup_locked_changes, start_instance, stop_instance,
+    address_url, apply_basics, apply_remote_config, bin_version, binary_upgraded, check_local_bind_addr, check_local_console_addr,
+    check_mirror_prefix, console_addr_warning, diff_pending, discover_locals,
+    fetch_config, fetch_status, latest_frp_release, load_locals, load_mirror, load_remotes, local_display,
+    local_console_addr,
+    local_port_owners, mirror_url, note_rename, open_url, parse_basics, parse_proxies, probe_health, probe_store, proc_stats,
+    read_config_file, remote_display, reveal_in_finder, remove_proxy, restart_instance, restore_config_from_backup,
+    running_frpcs, save_config, save_locals, save_mirror, save_remotes, startup_locked_changes, start_instance, stop_instance,
     store_add, store_delete, store_proxies, store_replace, store_update, tail_page, validate_host,
     version_at_least, wait_ready,
-    Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, ProxyAdv, ProxyCfg, RemoteTarget,
+    Basics as BackendBasics, Endpoint, LocalInstance, LocalSaved, NewProxy, PendingMark, ProxyAdv, ProxyCfg, RemoteTarget,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -32,6 +33,16 @@ pub struct AppState {
     remotes: Mutex<Vec<RemoteTarget>>,
     active: Mutex<Active>,
     staged: Mutex<String>,
+    /// 文件模式下"改了名但还没保存"的隧道（旧名→新名）。生命周期跟 `staged` 一致：
+    /// 暂存区被设备上的配置重置、或改动落地，这张表就清空。
+    renames: Mutex<HashMap<String, String>>,
+}
+
+impl AppState {
+    /// 暂存区被换成设备上的权威内容时调用：之前的待生效改名记录不再属于这份暂存
+    fn clear_renames(&self) {
+        self.renames.lock().unwrap().clear();
+    }
 }
 
 #[derive(Deserialize)]
@@ -178,6 +189,13 @@ async fn pull_staged(state: &AppState) -> Result<String, String> {
         }
         Active::Remote(_) => blocked(move || fetch_config(&ep)).await,
     }
+}
+
+/// 整体换掉暂存内容。暂存一旦被设备上的权威内容顶替（或清空），
+/// 之前记下的"待生效改名"就不再属于这份暂存了，跟着一起作废。
+fn put_staged(state: &AppState, src: String) {
+    *state.staged.lock().unwrap() = src;
+    state.clear_renames();
 }
 
 /// 当前目标的 frpc 是否开了 store（>=0.68 且配置了 store.path）。
@@ -422,7 +440,7 @@ async fn rescan(state: &AppState) -> Result<(), String> {
             Some(n) => {
                 *state.active.lock().unwrap() = n;
                 let src = pull_staged(state).await.unwrap_or_default();
-                *state.staged.lock().unwrap() = src;
+                put_staged(&state, src);
             }
             None => return Err(t!(
                 "既没有本机实例也没有远端目标",
@@ -544,7 +562,7 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
     *state.active.lock().unwrap() = next.clone();
     // 选中一台设备不该要求它活着，更不该为它等网络：这里只切指针、清暂存，
     // 立即返回。暂存由前端后台调 refresh_staged 补上（连不上就留空，不卡切换）。
-    state.staged.lock().unwrap().clear();
+    put_staged(&state, String::new());
     let label = match &next {
         Active::Local(i) => local_instance(&state, i)?.name,
         Active::Remote(n) => n.clone(),
@@ -559,7 +577,7 @@ async fn set_target(state: State<'_, AppState>, kind: String, id: String) -> Res
 #[tauri::command]
 async fn refresh_staged(state: State<'_, AppState>) -> Result<(), String> {
     let s = pull_staged(&state).await?;
-    *state.staged.lock().unwrap() = s;
+    put_staged(&state, s);
     Ok(())
 }
 
@@ -642,12 +660,81 @@ async fn add_local(
 #[tauri::command]
 async fn check_update(current: String) -> Result<serde_json::Value, String> {
     let cur = current.trim().to_string();
-    let (version, url) =
-        blocked(move || latest_frp_release().map_err(|e| anyhow::anyhow!(e))).await?;
+    let mirror = load_mirror();
+    let (version, url) = blocked(move || latest_frp_release(&mirror).map_err(|e| anyhow::anyhow!(e))).await?;
     let has_update = !cur.is_empty() && !version_at_least(&cur, &version);
     Ok(serde_json::json!({
         "version": version, "url": url, "current": cur, "hasUpdate": has_update,
     }))
+}
+
+/// GitHub 加速前缀（`[net] githubMirror`）。空串＝直连。
+#[tauri::command]
+async fn get_mirror() -> Result<String, String> {
+    Ok(load_mirror())
+}
+
+#[tauri::command]
+async fn set_mirror(prefix: String) -> Result<String, String> {
+    check_mirror_prefix(&prefix)?;
+    let p = prefix.trim();
+    save_mirror(p).map_err(|e| format!("{e:#}"))?;
+    Ok(if p.is_empty() {
+        t!("已改为直连 GitHub", "Now connecting to GitHub directly")
+    } else {
+        t!(
+            format!("已设置镜像前缀 {p}，接下来的检查与下载都先走它"),
+            format!("Mirror prefix set to {p}; checks and downloads go through it first")
+        )
+    })
+}
+
+/// 弹窗里的「测试这个前缀」：真的按带前缀的地址取一次 frp 最新版。
+/// 前缀写错时镜像会静默落回直连，界面看上去一切正常 —— 只有主动试一次才知道通不通。
+/// 失败也当成功返回（原因放进 detail），这是一次探测，不该弹成错误。
+#[tauri::command]
+async fn test_mirror(prefix: String) -> Result<serde_json::Value, String> {
+    let p = prefix.trim().to_string();
+    match blocked(move || latest_frp_release(&p).map_err(|e| anyhow::anyhow!(e))).await {
+        Ok((version, _)) => Ok(serde_json::json!({ "ok": true, "version": version })),
+        Err(e) => Ok(serde_json::json!({ "ok": false, "detail": format!("{e:#}") })),
+    }
+}
+
+/// 用系统浏览器打开一条映射地址（`a.example.com:8080` → `http://a.example.com:8080`）。
+/// 地址由前端从隧道行带来，但只有 http(s) 形态真能被拼成 URL，其余在这里挡掉。
+#[tauri::command]
+async fn open_address(addr: String) -> Result<String, String> {
+    let url = address_url(&addr).ok_or_else(|| t!(
+        "这个地址打不开：只有端口或被折叠成「+N 个域名」",
+        "This address can't be opened: it's only a port, or collapsed into \"+N domains\""
+    ))?;
+    let shown = url.clone();
+    blocked(move || open_url(&url).map_err(|e| anyhow::anyhow!(e))).await?;
+    Ok(t!(
+        format!("已在浏览器打开 {shown}"),
+        format!("Opened {shown} in the browser")
+    ))
+}
+
+/// 在文件管理器里定位某个本地端口背后那个服务的程序。
+/// 前端只传端口，路径由后端的进程索引给出——否则就成了"打开任意路径"的通道。
+#[tauri::command]
+async fn reveal_process(port: u16) -> Result<String, String> {
+    let owners = blocked(move || Ok::<_, anyhow::Error>(local_port_owners())).await?;
+    let owner = owners
+        .get(&port)
+        .cloned()
+        .ok_or_else(|| t!(
+            format!("没找到 {port} 这个端口上正在跑的服务"),
+            format!("No service found on port {port}")
+        ))?;
+    let path = owner.path.clone();
+    blocked(move || reveal_in_finder(&path).map_err(|e| anyhow::anyhow!(e))).await?;
+    Ok(t!(
+        format!("已在文件管理器中定位 {}", owner.name),
+        format!("Revealed {} in the file manager", owner.name)
+    ))
 }
 
 /// App 自身的版本号（打包时写进 tauri.conf.json 的那份）。
@@ -657,11 +744,54 @@ fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// tauri.conf.json 里配的 updater 端点。镜子前缀要加在它们前面，
+/// 所以这里读回来而不是在 Rust 里再抄一份地址。
+fn configured_endpoints(app: &tauri::AppHandle) -> Vec<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|v| v.get("endpoints"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|u| u.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 建一个 Updater：设了镜子就把"前缀版"排在原地址之前（插件按顺序试端点，
+/// 镜子挂了自动落回直连），没设就沿用配置。
+fn updater_for(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let mirror = load_mirror();
+    let urls = configured_endpoints(app);
+    let mut eps: Vec<url::Url> = Vec::new();
+    for u in &urls {
+        if let Some(m) = mirror_url(&mirror, u) {
+            if let Ok(p) = url::Url::parse(&m) {
+                eps.push(p);
+            }
+        }
+        if let Ok(p) = url::Url::parse(u) {
+            eps.push(p);
+        }
+    }
+    if eps.is_empty() {
+        return app.updater().map_err(|e| format!("{e}"));
+    }
+    app.updater_builder()
+        .endpoints(eps)
+        .map_err(|e| format!("{e}"))?
+        .build()
+        .map_err(|e| format!("{e}"))
+}
+
 /// App 自身的更新检查：读 GitHub Release 上的 latest.json（minisign 验签）。
 /// 启动时静默调一次，失败由前端吞掉，所以这里的错误只会在手动检查时露出来。
 #[tauri::command]
 async fn check_app_update(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
-    let updater = app.updater().map_err(|e| format!("{e}"))?;
+    let updater = updater_for(&app)?;
     match updater.check().await {
         Ok(Some(p)) => Ok(Some(serde_json::json!({ "version": p.version, "notes": p.body }))),
         Ok(None) => Ok(None),
@@ -677,16 +807,31 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<Option<serde_json::Va
 /// 下载并安装新版本，然后重启。Windows 由安装器接管退出，macOS/Linux 装完自己重启。
 #[tauri::command]
 async fn install_app_update(app: tauri::AppHandle) -> Result<String, String> {
-    let updater = app.updater().map_err(|e| format!("{e}"))?;
-    let package = updater
+    let mirror = load_mirror();
+    let updater = updater_for(&app)?;
+    let mut package = updater
         .check()
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| t!("已经是最新版本", "Already on the latest version"))?;
-    package
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| format!("{e}"))?;
+    // manifest 里的下载地址指向 GitHub。设了镜子就换到镜子上去取安装包
+    // （签名已经在 manifest 里，验签不受影响），失败再退回原地址试一次。
+    let direct = package.download_url.clone();
+    let mirrored = mirror_url(&mirror, direct.as_str())
+        .and_then(|m| url::Url::parse(&m).ok())
+        .filter(|m| *m != direct);
+    if let Some(m) = &mirrored {
+        package.download_url = m.clone();
+    }
+    if let Err(e) = package.download_and_install(|_, _| {}, || {}).await {
+        if mirrored.is_some() {
+            eprintln!("[updater] 镜子下载失败（{e}），退回 {direct} 重试");
+            package.download_url = direct;
+            package.download_and_install(|_, _| {}, || {}).await.map_err(|e2| format!("{e2}"))?;
+        } else {
+            return Err(format!("{e}"));
+        }
+    }
     app.restart()
 }
 
@@ -886,7 +1031,7 @@ async fn update_target(
     if matches!(&*state.active.lock().unwrap(), Active::Remote(n) if n == &original) {
         *state.active.lock().unwrap() = Active::Remote(name.clone());
         if let Ok(src) = pull_staged(&state).await {
-            *state.staged.lock().unwrap() = src;
+            put_staged(&state, src);
         }
     }
     Ok(t!(
@@ -934,7 +1079,8 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
     let ep2 = ep.clone();
     let t2 = t.clone();
     let inst_pid = inst.as_ref().and_then(|x| x.pid);
-    let (status, pid, saved_at, stats, ver, owners) = tauri::async_runtime::spawn_blocking(move || {
+    let renames = state.renames.lock().unwrap().clone();
+    let (status, pid, saved_at, stats, ver, owners, committed) = tauri::async_runtime::spawn_blocking(move || {
         let list = fetch_status(&ep2);
         let pid = t2.as_ref().and_then(|t| {
             let run = running_frpcs();
@@ -963,10 +1109,23 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                 Some(backend::fmt_local_time(secs))
             })
             .unwrap_or_default();
-        (list, pid, saved, stats, ver, owners)
+        // "设备上已提交的那一份"才是待生效比对的基准：本机读文件，远端问 /api/config
+        // （暂存区里的改动还没落地，拿它自己比自己永远是"没变化"）
+        let committed = match &t2 {
+            Some(t) => read_config_file(t).ok(),
+            None => fetch_config(&ep2).ok(),
+        };
+        (list, pid, saved, stats, ver, owners, committed)
     })
     .await
     .map_err(|e| e.to_string())?;
+
+    // 两边任一解析不出来就不画待生效标记：把整台设备的隧道标成"待删除"比什么都不标更糟
+    let staged_list = parse_proxies(&staged).unwrap_or_default();
+    let (pending, added) = match committed.as_deref().and_then(|c| parse_proxies(c).ok()) {
+        Some(eff) => diff_pending(&eff, &staged_list, &renames),
+        None => (HashMap::new(), Vec::new()),
+    };
 
     let (effective, store_mode) = effective_proxies(&state).await;
     let cfg_problem = staged_problem(&state);
@@ -996,8 +1155,22 @@ async fn get_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
                     "pid": s.pid, "name": s.name, "path": s.path,
                     "rssMb": s.rss_mb, "cpuPct": s.cpu_pct,
                 })),
+                // 暂存区里已改、设备上还没生效的部分（划线显示旧值用）
+                "pending": pending_json(pending.get(&p.name)),
+                // 待生效改名后，配置视图里这条已经叫新名字了 —— 编辑/删除都要按它去查，
+                // 否则会在这行正在显示的隧道上报"未找到该隧道"
+                "editName": renames.get(&p.name).cloned().unwrap_or_else(|| p.name.clone()),
             }));
         }
+    }
+    // 只在暂存区里出现的新隧道：还没写进设备，/api/status 自然没有它，得补一行
+    for c in &added {
+        proxies.push(serde_json::json!({
+            "name": c.name, "ptype": c.ptype, "status": "staged",
+            "err": "", "localAddr": local_display(c), "remoteAddr": remote_display(c),
+            "domains": c.domains, "remotePort": c.remote_port,
+            "source": "file", "svc": null, "pendingNew": true,
+        }));
     }
     let running_count = proxies
         .iter()
@@ -1054,6 +1227,28 @@ fn basics_json(b: &BackendBasics) -> serde_json::Value {
     })
 }
 
+/// 待生效标记换成前端能直接画的形状：`{"name":{"old":…,"new":…}, …, "del":true}`
+fn pending_json(m: Option<&PendingMark>) -> Option<serde_json::Value> {
+    let m = m?;
+    let field = |x: &Option<backend::PendingField>| {
+        x.as_ref().map(|p| serde_json::json!({ "old": p.old, "new": p.new }))
+    };
+    let mut o = serde_json::Map::new();
+    if m.removed {
+        o.insert("del".into(), serde_json::json!(true));
+    }
+    for (k, v) in [
+        ("name", field(&m.name)),
+        ("local", field(&m.local)),
+        ("remote", field(&m.remote)),
+    ] {
+        if let Some(v) = v {
+            o.insert(k.into(), v);
+        }
+    }
+    (!o.is_empty()).then(|| serde_json::Value::Object(o))
+}
+
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let staged = state.staged.lock().unwrap().clone();
@@ -1079,7 +1274,7 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 #[tauri::command]
 async fn reload_config(state: State<'_, AppState>) -> Result<(), String> {
     let src = pull_staged(&state).await?;
-    *state.staged.lock().unwrap() = src;
+    put_staged(&state, src);
     Ok(())
 }
 
@@ -1137,6 +1332,9 @@ async fn remove_proxy_cmd(state: State<'_, AppState>, name: String) -> Result<St
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = remove_proxy(&staged, &name).map_err(|e| format!("{e:#}"))?;
+    drop(staged);
+    // 这条如果是"待生效改名"的结果，那条改名记录已经没有意义了
+    state.renames.lock().unwrap().retain(|_, v| v.as_str() != name);
     Ok(t!(
         format!("已从暂存配置移除「{name}」，点右上角的保存按钮写入目标"),
         format!("\"{name}\" removed from the staged config; click Save (top right) to write it to the target")
@@ -1186,6 +1384,10 @@ async fn update_proxy_cmd(
     }
     let mut staged = state.staged.lock().unwrap();
     *staged = backend::update_proxy(&staged, &original, &p).map_err(|e| format!("{e:#}"))?;
+    drop(staged);
+    // 改名后暂存里的名字和设备上跑着的名字不再是同一个，得记下这条链，
+    // 否则下一轮比对会把它当成"删了一条 + 新建了一条"
+    note_rename(&mut state.renames.lock().unwrap(), &original, &p.name);
     Ok(t!(
         "已改动暂存配置，点右上角的保存按钮写入目标",
         "Staged config updated; click Save (top right) to write it to the target"
@@ -1291,7 +1493,7 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             if let Some(e) = &adopted {
                 adopt_local_endpoint(state, &id, e);
             }
-            *state.staged.lock().unwrap() = src;
+            put_staged(&state, src);
             Ok(note)
         }
         Active::Remote(name) => {
@@ -1349,7 +1551,7 @@ async fn write_config(state: &AppState, new_src: String, with_restart: bool) -> 
             if let Some(e) = &adopted {
                 adopt_remote_endpoint(state, &name, e);
             }
-            *state.staged.lock().unwrap() = new_src;
+            put_staged(&state, new_src);
             Ok(note)
         }
     }
@@ -1771,9 +1973,10 @@ fn main() {
         remotes: Mutex::new(remotes),
         active: Mutex::new(active),
         staged: Mutex::new(String::new()),
+        renames: Mutex::new(HashMap::new()),
     };
     if let Ok(src) = tauri::async_runtime::block_on(pull_staged(&state)) {
-        *state.staged.lock().unwrap() = src;
+        put_staged(&state, src);
     }
 
     tauri::Builder::default()
@@ -1789,6 +1992,11 @@ fn main() {
             check_app_update,
             app_version,
             install_app_update,
+            get_mirror,
+            set_mirror,
+            test_mirror,
+            open_address,
+            reveal_process,
             rename_local,
             remove_local,
             rescan_locals,
@@ -1912,6 +2120,7 @@ mod tests {
             remotes: std::sync::Mutex::new(Vec::new()),
             active: std::sync::Mutex::new(Active::Local("x".into())),
             staged: std::sync::Mutex::new(staged.into()),
+            renames: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 

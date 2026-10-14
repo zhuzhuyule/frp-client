@@ -165,6 +165,16 @@ k("device.removeBtn", "移除设备", "Remove Device");
 k("device.rescanBtn", "⟳ 重新扫描本机", "⟳ Rescan This Machine");
 k("device.addTestBtn", "添加并测试", "Add & Test");
 
+/* ---------- GitHub 访问加速 ---------- */
+k("net.entry", "GitHub 加速", "GitHub Mirror");
+k("net.entryTitle", "App 访问 GitHub 走哪个地址 · 点这里设置镜像前缀", "Which address the app uses to reach GitHub · click here to set a mirror prefix");
+k("net.title", "GitHub 访问加速", "GitHub Access Speed");
+k("net.mirror", "镜像前缀", "Mirror prefix");
+k("net.hint", "只影响 App 自己访问 GitHub 的两件事：查 frpc 最新版、检查和下载 App 更新。填的是「前缀」，完整地址接在它后面，例如 https://github.ofind.cn/https://github.com/…。留空＝直连；镜像不通时会自动落回直连，改完不用重启。", "Affects only two things where the app itself reaches GitHub: the frpc latest-version check, and checking/downloading app updates. Enter a prefix — the full URL is appended after it, e.g. https://github.ofind.cn/https://github.com/…. Empty means direct; if the mirror fails it falls back to direct on its own. No restart needed.");
+k("net.clearBtn", "恢复直连", "Go Direct");
+k("net.testBtn", "测试这个前缀", "Test This Prefix");
+k("net.testNote", "用带前缀的地址取一次 frp 最新版，验证前缀是否真的通了", "Fetches the latest frp release through the prefixed address to check the prefix really works");
+
 /* ---------- 模型配置弹窗 ---------- */
 k("aiModal.title", "添加模型配置", "Add Model Config");
 k("aiModal.name", "配置名称", "Config name");

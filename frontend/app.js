@@ -28,6 +28,8 @@ const state = {
   latest: null,
   // 本 App 自己的版本（来自打包配置，和上面那行 frpc 的版本是两码事）
   appVer: "",
+  // GitHub 加速前缀（app.toml [net] githubMirror），空串＝直连
+  mirror: "",
   // 最近一次 App 更新检查：{ at, failed }；failed 时按钮照旧可点，但要说清没查到不等于最新
   appChecked: null,
   editing: null,
@@ -90,6 +92,10 @@ const SVG = (d) =>
 const ICO_EDIT = SVG('<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />');
 const ICO_DEL = SVG('<path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />');
 const ICO_OK = SVG('<path d="M20 6 9 17l-5-5" />');
+/* 行内快捷图标：复制 / 用浏览器打开 / 在文件管理器里定位 */
+const ICO_COPY = SVG('<rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />');
+const ICO_OPEN = SVG('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><path d="M15 3h6v6" /><path d="M10 14 21 3" />');
+const ICO_FOLDER = SVG('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2Z" />');
 
 /* ---------- toast ---------- */
 function toast(text, kind = "ok") {
@@ -101,6 +107,43 @@ function toast(text, kind = "ok") {
     el.classList.add("out");
     setTimeout(() => el.remove(), 300);
   }, kind === "err" ? 6000 : 4000);
+}
+
+/* 复制到剪贴板：先走同步的 execCommand —— WebView 里 navigator.clipboard.writeText
+   在没有焦点时会一直不 settle（既不 resolve 也不 reject），await 它就等于点了没反应。
+   同步那条不通再试异步 API，并给它一个超时兜底，两条都不行才说没复制。 */
+function copyViaSelection(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-20px;left:-20px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+async function copyText(text) {
+  let ok = copyViaSelection(text);
+  if (!ok && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(text),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("clipboard timeout")), 1200)),
+      ]);
+      ok = true;
+    } catch (e) {
+      ok = false;
+    }
+  }
+  if (ok) toast(tx(`已复制 ${text}`, `Copied ${text}`), "ok");
+  else toast(tx("复制失败，请手动选中文字", "Copy failed — please select the text manually"), "err");
 }
 
 /* 有改动 / 有写入 → 提醒去点刷新；点了刷新就灭 */
@@ -130,6 +173,7 @@ function setBusy(b) {
   // 上面那句是把所有按钮强行放开，可用性真正由数据决定的几处得立刻交回给各自的渲染函数
   if (state.status) renderOverview(state.status);
   renderConfigOverview();
+  syncRowLocks();
 }
 
 /* 把一串 invoke 包成一个不可打断的写入流程 */
@@ -466,7 +510,7 @@ document.addEventListener("click", (e) => {
   input.focus();
   markPresets();
 });
-["d-host", "d-port", "c-port", "c-web-addr", "c-web-port", "n-local-ip", "n-local-port", "n-remote-port"].forEach((id) =>
+["d-host", "d-port", "c-port", "c-web-addr", "c-web-port", "n-local-ip", "n-local-port", "n-remote-port", "n-mirror"].forEach((id) =>
   $(id).addEventListener("input", markPresets)
 );
 
@@ -792,7 +836,7 @@ async function refreshStatus(quiet) {
   // 当前这台的结果已经在 get_status 里了，先填进探活表，页签上的点不用等 probe_targets 那一轮
   state.probe[s.targetId] = {
     ok: !!s.apiReachable,
-    bad: (s.proxies || []).filter((p) => p.status !== "running" || p.err).length,
+    bad: (s.proxies || []).filter((p) => p.status !== "running" && p.status !== "staged" || p.err).length,
   };
   // 已连上的本机只报运行时长；其它设备页签上已经有名字，这里不再重复一行字
   const sub = s.mode === "local" && s.running && st && st.etime ? fmtEtime(st.etime) : "";
@@ -847,6 +891,23 @@ function remoteLines(p) {
   return port ? [":" + port] : [];
 }
 
+/* 一列里的统一写法：旧值整列划线，新值走第二行（还没保存生效的改动） */
+function pendBlock(lines, quick, pn) {
+  const old = lines.length
+    ? lines
+        .map((l, i) => `<span class="t-line"><span class="struck ${i ? "r-sub" : "r-main"}">${esc(l)}</span>${i ? "" : quick}</span>`)
+        .join("")
+    : '<span class="t-line"><span class="struck">—</span></span>';
+  return pn ? old + `<span class="t-line"><span class="p-new">${esc(pn)}</span></span>` : old;
+}
+
+/* setBusy(false) 会把所有 .btn 强行放开，这里把「待删除」那行的编辑按钮重新摁回去 */
+function syncRowLocks() {
+  document.querySelectorAll("#tunnel-rows .edit").forEach((el) => {
+    el.disabled = el.dataset.lock === "1";
+  });
+}
+
 function renderTunnels() {
   const rows = filteredProxies();
   const s = state.status;
@@ -868,26 +929,78 @@ function renderTunnels() {
       const running = p.status === "running";
       const svc = p.svc;
       const rlines = remoteLines(p);
+      // 后台进程那行的快捷操作要有端口才能定位（reveal 走后端进程索引，前端不传路径）
+      const lport = (String(p.localAddr || "").match(/:(\d+)$/) || [])[1];
+      const svcQuick = svc && lport
+        ? `<span class="quick">`
+          + (svc.path ? `<button class="qi" data-copy="${esc(svc.path)}" title="${tx("复制该程序的路径", "Copy this program's path")}">${ICO_COPY}</button>` : "")
+          + `<button class="qi" data-reveal="${lport}" title="${tx("在文件管理器中定位该程序", "Reveal this program in the file manager")}">${ICO_FOLDER}</button>`
+          + `</span>`
+        : "";
+      // 映射地址：只有端口（":6022"）或 udp 没有可打开的形态，就不给"打开"
+      const rMain = (rlines[0] || "").trim();
+      const openable = !!rMain && !rMain.startsWith(":") && !rMain.includes(" ") && p.ptype !== "udp";
+      const remoteQuick = rMain
+        ? `<span class="quick">`
+          + `<button class="qi" data-copy="${esc(rMain)}" title="${tx("复制该映射地址", "Copy this mapped address")}">${ICO_COPY}</button>`
+          + (openable ? `<button class="qi" data-open="${esc(rMain)}" title="${tx("在浏览器里打开", "Open in the browser")}">${ICO_OPEN}</button>` : "")
+          + `</span>`
+        : "";
+      // 图标跟着第一行走，不然在纵向的 .t-two 里会自成一行
+      const remoteLines2 = rlines.length
+        ? rlines
+            .map((l, i) => `<span class="t-line"><span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>${i ? "" : remoteQuick}</span>`)
+            .join("")
+        : '<span class="t-line"><span>—</span></span>';
+      // 待生效：这台设备上跑的还是旧值，暂存区里已经是新值
+      const pd = p.pending || {};
+      const editName = p.editName || p.name;
+      const pendWhat = [
+        pd.name && tx("名称", "name"),
+        pd.local && tx("本地地址", "local address"),
+        pd.remote && tx("映射地址", "mapped address"),
+      ].filter(Boolean).join(tx("、", ", "));
+      const pendTip = pd.del
+        ? tx("已从暂存区删除 · 保存后这条隧道不再存在", "Removed from the drafts · saving will delete this tunnel")
+        : pendWhat + tx(" 已改动，还没保存生效", " changed, not saved yet");
+      const struck = pd.name || pd.del;
+      const remoteBlock = pd.remote ? pendBlock(rlines, remoteQuick, pd.remote.new) : remoteLines2;
       return `<div class="trow">
         <div class="col-name">
           <div class="t-ico ico ${tc}">${esc((p.name[0] || "?").toUpperCase())}</div>
-          <div class="t-name"><b title="${esc(p.name)}">${esc(p.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(p.ptype))}">${esc(typeTag(p.ptype))}</i>${p.source === "store" ? `<i class="tag live" title="${tx("改动直接生效，不写配置文件", "Takes effect immediately, not written to config file")}">${tx("实时", "Live")}</i>` : ""}${p.err ? `<i class="tag err err-link" title="${tx("点击查看日志排查", "Click to view logs to investigate")}">${tx("存在错误", "Has error")}</i>` : ""}</span></div>
+          <div class="t-name"><b class="${struck ? "struck" : ""}" title="${esc(p.name)}">${esc(p.name)}</b><span class="tags"><i class="tag ${tc}" title="${esc(typeDesc(p.ptype))}">${esc(typeTag(p.ptype))}</i>${p.source === "store" ? `<i class="tag live" title="${tx("改动直接生效，不写配置文件", "Takes effect immediately, not written to config file")}">${tx("实时", "Live")}</i>` : ""}${pd.del ? `<i class="tag pend del" title="${esc(pendTip)}">${tx("待删除", "To delete")}</i>` : pendWhat ? `<i class="tag pend" title="${esc(pendTip)}">${tx("待生效", "Pending")}</i>` : ""}${p.err ? `<i class="tag err err-link" title="${tx("点击查看日志排查", "Click to view logs to investigate")}">${tx("存在错误", "Has error")}</i>` : ""}</span>${pd.name ? `<span class="p-new" title="${esc(pendTip)}">${esc(pd.name.new)}</span>` : ""}</div>
         </div>
         <div class="col-local t-two">
-          <span>${esc(p.localAddr || "—")}</span>
-          ${svc ? `<i class="svc" title="${esc(svc.path)} · pid ${svc.pid}">${esc(svc.name)}</i>` : ""}
+          ${pd.local ? pendBlock([p.localAddr || "—"], "", pd.local.new) : `<span class="t-line"><span>${esc(p.localAddr || "—")}</span></span>`}
+          ${svc ? `<span class="t-line"><i class="svc" title="${esc(svc.path)} · pid ${svc.pid}">${esc(svc.name)}</i>${svcQuick}</span>` : ""}
         </div>
-        <div class="col-remote t-two" title="${esc((p.domains || "").trim() || (p.remoteAddr || "").trim())}">${rlines.map((l, i) => `<span class="${i ? "r-sub" : "r-main"}">${esc(l)}</span>`).join("") || "<span>—</span>"}</div>
-        <span class="col-status"><span class="badge ${running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}>● ${running ? tx("运行中", "Running") : esc(p.status)}</span></span>
+        <div class="col-remote t-two" title="${esc((p.domains || "").trim() || rMain)}">${remoteBlock}</div>
+        <span class="col-status"><span class="badge ${p.status === "staged" ? "pend" : running ? "run" : "stop"}"${p.err ? ` title="${esc(p.err)}"` : ""}${p.status === "staged" ? ` title="${tx("这条只在暂存区里 · 保存后才写入这台设备", "Draft only · saving writes it to this device")}"` : ""}>● ${p.status === "staged" ? tx("待生效", "Pending") : running ? tx("运行中", "Running") : esc(p.status)}</span></span>
         <span class="col-edit">
-          <button class="btn icon edit" data-name="${esc(p.name)}" title="${esc(cfgErr || tx("编辑该隧道", "Edit this tunnel"))}">${ICO_EDIT}</button>
-          <button class="btn icon danger del" data-name="${esc(p.name)}" title="${tx("删除该隧道", "Delete this tunnel")}">${ICO_DEL}</button>
+          <button class="btn icon edit" data-name="${esc(editName)}" data-lock="${pd.del ? 1 : 0}"${pd.del ? " disabled" : ""} title="${esc(pd.del ? pendTip : cfgErr || tx("编辑该隧道", "Edit this tunnel"))}">${ICO_EDIT}</button>
+          ${pd.del ? "" : `<button class="btn icon danger del" data-name="${esc(editName)}" title="${tx("删除该隧道", "Delete this tunnel")}">${ICO_DEL}</button>`}
         </span>
       </div>`;
     })
     .join("");
   box.querySelectorAll(".edit").forEach((el) =>
     el.addEventListener("click", () => openEditProxy(el.dataset.name))
+  );
+  box.querySelectorAll(".qi").forEach((el) =>
+    el.addEventListener("click", async (ev) => {
+      // 行内图标点下去不该顺带触发整行的其它交互
+      ev.stopPropagation();
+      const d = el.dataset;
+      if (d.copy) {
+        copyText(d.copy);
+      } else if (d.open) {
+        const note = await softCall("open_address", { addr: d.open });
+        if (okv(note)) toast(note, "ok");
+      } else if (d.reveal) {
+        const note = await softCall("reveal_process", { port: Number(d.reveal) });
+        if (okv(note)) toast(note, "ok");
+      }
+    })
   );
   box.querySelectorAll(".del").forEach((el) =>
     el.addEventListener("click", () => deleteProxy(el.dataset.name))
@@ -1865,6 +1978,82 @@ $("btn-lang").addEventListener("click", async () => {
   location.reload();
 });
 
+/* ---------- GitHub 访问加速 ----------
+   前缀存在 app.toml [net] githubMirror，空＝直连。生效范围只有两处：
+   侧栏「检查更新」（frpc 最新版）和 App 自己的更新检查/下载。 */
+const MIRROR_PRESET = "https://github.ofind.cn/";
+
+function styleNetBtn() {
+  const b = $("btn-net");
+  b.classList.toggle("on", !!state.mirror);
+  b.querySelector(".net-label").textContent = state.mirror
+    ? tx("走镜像", "Mirrored")
+    : tt("net.entry");
+  b.title = state.mirror
+    ? tx(`GitHub 走镜像：${state.mirror}`, `GitHub goes through the mirror: ${state.mirror}`)
+    : tt("net.entryTitle");
+}
+
+function openNetModal() {
+  const v = state.mirror || "";
+  $("n-mirror").value = v;
+  $("net-test-note").textContent = tt("net.testNote");
+  $("net-test-note").className = "hint";
+  presetChips("net-presets", "n-mirror", [MIRROR_PRESET]);
+  markPresets();
+  $("net-mask").classList.remove("hidden");
+  $("n-mirror").focus();
+}
+
+function closeNetModal() {
+  $("net-mask").classList.add("hidden");
+}
+
+async function saveMirror(prefix) {
+  const msg = await call("set_mirror", { prefix });
+  if (!okv(msg)) return false;
+  state.mirror = prefix.trim();
+  styleNetBtn();
+  toast(msg, "ok");
+  return true;
+}
+
+$("btn-net").addEventListener("click", openNetModal);
+$("btn-net-close").addEventListener("click", closeNetModal);
+$("btn-net-cancel").addEventListener("click", closeNetModal);
+$("net-mask").addEventListener("click", (e) => {
+  if (e.target === $("net-mask")) closeNetModal();
+});
+$("btn-net-save").addEventListener("click", async () => {
+  if (await saveMirror($("n-mirror").value.trim())) closeNetModal();
+});
+/* 恢复直连是一步到位的动作，不留"清空了但没保存"的中间态 */
+$("btn-net-clear").addEventListener("click", async () => {
+  if (await saveMirror("")) closeNetModal();
+});
+$("btn-net-test").addEventListener("click", async () => {
+  const prefix = $("n-mirror").value.trim();
+  const note = $("net-test-note");
+  // 留空也是能测的：测的就是"这台机器直连 GitHub 通不通"
+  note.textContent = prefix
+    ? tx("正在通过带前缀的地址取 frp 最新版…", "Fetching the latest frp release through the prefixed address…")
+    : tx("正在直接连 GitHub 取 frp 最新版…", "Connecting to GitHub directly for the latest frp release…");
+  note.className = "hint";
+  let r = null;
+  try {
+    r = await invoke("test_mirror", { prefix });
+  } catch (e) {
+    r = { ok: false, detail: String(e) };
+  }
+  if (r.ok) {
+    note.textContent = tx(`通了 · 最新版 ${r.version}`, `Works · latest ${r.version}`);
+    note.className = "hint ok";
+  } else {
+    note.textContent = r.detail;
+    note.className = "hint warn";
+  }
+});
+
 $("btn-refresh").addEventListener("click", async () => {
   showSkeletons();
   if (state.page === "config") {
@@ -1878,6 +2067,12 @@ $("btn-refresh").addEventListener("click", async () => {
 
 (async function init() {
   styleLangBtn();
+  try {
+    state.mirror = (await invoke("get_mirror")) || "";
+  } catch (e) {
+    state.mirror = ""; // 拿不到就按直连显示，别为一行侧栏报错
+  }
+  styleNetBtn();
   showPage("tunnels");
   showSkeletons();
   await loadTargets();

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1862,8 +1863,68 @@ pub fn version_at_least(cur: &str, want: &str) -> bool {
     true
 }
 
-/// GitHub 上 fatedier/frp 的最新发布版本；只在用户点「检查更新」时调用
-pub fn latest_frp_release() -> Result<(String, String), String> {
+/// GitHub 上 fatedier/frp 的最新发布版本；只在用户点「检查更新」时调用。
+///
+/// 走 `<镜像前缀>https://github.com/fatedier/frp/releases/latest` 的 302 Location 取 tag，
+/// 而不是 `api.github.com`：实测常见镜像前缀**不转发 api.github.com**（返回 404 的 HTML），
+/// 而 `github.com` 整条链路都能透传（含它自己发出的相对跳转）。顺带也不吃未登录 60 次/小时的限流。
+/// 三条路按顺序试：镜子 → 直连跳转 → 直连 api.github.com（最后这条留着，
+/// 是为了镜子返回 200 HTML 之类不认跳转的怪答复时还能给出版本号）。
+pub fn latest_frp_release(mirror: &str) -> Result<(String, String), String> {
+    const LATEST_PAGE: &str = "https://github.com/fatedier/frp/releases/latest";
+    let mut tries: Vec<String> = Vec::new();
+    if let Some(m) = mirror_url(mirror, LATEST_PAGE) {
+        tries.push(m);
+    }
+    tries.push(LATEST_PAGE.to_string());
+    let mut errs = Vec::new();
+    for url in &tries {
+        match latest_via_redirect(url) {
+            Ok(v) => return Ok(v),
+            Err(e) => errs.push(format!("{url} → {e}")),
+        }
+    }
+    match latest_via_api() {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            errs.push(e);
+            Err(errs.join("；"))
+        }
+    }
+}
+
+/// 不跟随跳转，只读 Location 里的 tag
+fn latest_via_redirect(url: &str) -> Result<(String, String), String> {
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(8))
+        .build();
+    let resp = agent
+        .get(url)
+        .set("User-Agent", "frp-client-tauri")
+        .call()
+        .map_err(|e| l10n::t(format!("GET 失败：{e}"), format!("GET failed: {e}")))?;
+    let loc = resp.header("location").ok_or_else(|| {
+        l10n::t(
+            format!("答复里没有跳转地址（状态 {}）", resp.status()),
+            format!("No redirect address in the reply (status {})", resp.status()),
+        )
+    })?;
+    let page = resolve_location(url, loc);
+    let tag = page
+        .rsplit("/tag/")
+        .next()
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| l10n::t(
+            format!("跳转地址里没有版本号：{loc}"),
+            format!("No version in the redirect address: {loc}"),
+        ))?;
+    let version = tag.trim_start_matches('v').trim().to_string();
+    // 给用户看的永远是真 GitHub 页；镜子前缀只用于取数据
+    Ok((version, format!("https://github.com/fatedier/frp/releases/tag/{tag}")))
+}
+
+fn latest_via_api() -> Result<(String, String), String> {
     let url = "https://api.github.com/repos/fatedier/frp/releases/latest";
     let body: serde_json::Value = ureq::get(url)
         .set("User-Agent", "frp-client-tauri")
@@ -1900,6 +1961,146 @@ pub fn latest_frp_release() -> Result<(String, String), String> {
         .to_string();
     Ok((tag, page))
 }
+
+// ---------- GitHub 访问加速（镜像前缀） ----------
+
+/// 去掉末尾多余空白、补上分隔用的最后一个 `/`；空串表示不用镜子
+fn normalize_mirror(prefix: &str) -> String {
+    let p = prefix.trim();
+    if p.is_empty() {
+        return String::new();
+    }
+    if p.ends_with('/') {
+        p.to_string()
+    } else {
+        format!("{p}/")
+    }
+}
+
+/// `[net] githubMirror`：形如 `https://github.ofind.cn/` 的前缀，空＝直连 GitHub
+pub fn load_mirror() -> String {
+    let Ok(src) = std::fs::read_to_string(app_config_path()) else {
+        return String::new();
+    };
+    let Ok(doc) = src.parse::<DocumentMut>() else {
+        return String::new();
+    };
+    doc.get("net")
+        .and_then(|it| it.as_table())
+        .and_then(|t| {
+            t.get("githubMirror")
+                .and_then(|it| it.as_value())
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+pub fn save_mirror(prefix: &str) -> Result<()> {
+    let path = app_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| l10n::t(format!("创建 {} 失败", dir.display()), format!("Failed to create {}", dir.display())))?;
+    }
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(src) => src.parse::<DocumentMut>().context(l10n::t("app.toml 解析失败", "Failed to parse app.toml"))?,
+        Err(_) => DocumentMut::new(),
+    };
+    let mut t = Table::new();
+    t["githubMirror"] = value(normalize_mirror(prefix));
+    doc["net"] = Item::Table(t);
+    write_app_doc(&doc)
+}
+
+/// 加前缀。前缀为空、或目标不是 http(s) 地址时返回 None（＝按原地址走）
+pub fn mirror_url(prefix: &str, url: &str) -> Option<String> {
+    let p = normalize_mirror(prefix);
+    if p.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+        return None;
+    }
+    Some(format!("{p}{url}"))
+}
+
+/// `scheme://host[:port]`，手工切即可：这些地址都是我们自己拼出来的
+fn origin_of(url: &str) -> String {
+    let Some(pos) = url.find("://") else {
+        return String::new();
+    };
+    let rest = &url[pos + 3..];
+    let host = rest.split('/').next().unwrap_or(rest);
+    format!("{}://{}", &url[..pos], host)
+}
+
+/// 跳转地址有三种写法：绝对地址、镜子的 `/https://github.com/...`、GitHub 的 `/fatedier/...`。
+/// 后两种都要拼回**发起请求的那个 host**，否则在镜子链路上会跳回 GitHub。
+pub fn resolve_location(base: &str, loc: &str) -> String {
+    let loc = loc.trim();
+    if loc.starts_with("http://") || loc.starts_with("https://") {
+        return loc.to_string();
+    }
+    let origin = origin_of(base);
+    if origin.is_empty() {
+        return loc.to_string();
+    }
+    format!("{origin}/{}", loc.trim_start_matches('/'))
+}
+
+/// 用系统默认浏览器打开一个映射地址。只收 http(s)，避免把 `file://` 之类塞进来。
+pub fn open_url(url: &str) -> Result<()> {
+    let u = url.trim();
+    if !(u.starts_with("http://") || u.starts_with("https://")) {
+        bail!(l10n::t(
+            "只能打开 http/https 地址",
+            "Only http/https addresses can be opened"
+        ));
+    }
+    #[cfg(windows)]
+    let spawned = {
+        // start 的第一个参数是窗口标题，空串不能省，否则 URL 被当成标题
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", u]);
+        no_window(&mut c);
+        c.spawn()
+    };
+    #[cfg(not(windows))]
+    let spawned = {
+        let bin = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let mut c = std::process::Command::new(bin);
+        c.arg(u);
+        no_window(&mut c);
+        c.spawn()
+    };
+    spawned.with_context(|| l10n::t(format!("打开 {u} 失败"), format!("Failed to open {u}")))?;
+    Ok(())
+}
+
+/// 界面上的"映射地址"（`a.example.com`、`1.2.3.4:9205`）换成能打开的 URL。
+/// 只有端口（`:9205`）或空行打不开，返回 None 让前端不出这个按钮。
+pub fn address_url(addr: &str) -> Option<String> {
+    let a = addr.trim().trim_matches(',').trim();
+    // ":9205"（只有端口）和"+3 个域名"这类折叠行都没法打开
+    if a.is_empty() || a.starts_with(':') || a.contains(char::is_whitespace) {
+        return None;
+    }
+    if a.starts_with("http://") || a.starts_with("https://") {
+        return Some(a.to_string());
+    }
+    Some(format!("http://{a}"))
+}
+
+/// 前缀必须是完整 URL（带协议），否则拼出来的东西没人能连
+pub fn check_mirror_prefix(prefix: &str) -> Result<(), String> {
+    let p = prefix.trim();
+    if p.is_empty() || p.starts_with("http://") || p.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(l10n::t(
+            "镜像前缀要带协议，比如 https://github.ofind.cn/",
+            "The mirror prefix must include the scheme, e.g. https://github.ofind.cn/",
+        ))
+    }
+}
+
 
 /// 本地端口背后那个服务的进程信息
 #[derive(Clone, Debug)]
@@ -2913,6 +3114,121 @@ pub fn update_proxy(src: &str, original: &str, p: &NewProxy) -> Result<String> {
     Ok(doc.to_string())
 }
 
+/// 一条隧道"改了但还没生效"的某个字段：old 是设备上已提交的那份，new 是暂存区里的
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PendingField {
+    pub old: String,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PendingMark {
+    pub name: Option<PendingField>,
+    pub local: Option<PendingField>,
+    pub remote: Option<PendingField>,
+    /// 暂存区里已经删掉这条，但设备上还在跑
+    pub removed: bool,
+}
+
+impl PendingMark {
+    pub fn is_empty(&self) -> bool {
+        !self.removed && self.name.is_none() && self.local.is_none() && self.remote.is_none()
+    }
+}
+
+/// 界面上"本地地址"那一栏的可比字符串
+pub fn local_display(c: &ProxyCfg) -> String {
+    if c.local_ip.trim().is_empty() && c.local_port.trim().is_empty() {
+        return String::new();
+    }
+    let ip = {
+        let t = c.local_ip.trim();
+        if t.is_empty() {
+            "127.0.0.1"
+        } else {
+            t
+        }
+    };
+    format!("{ip}:{}", c.local_port.trim())
+}
+
+/// 界面上"映射地址"那一栏的可比字符串：http 用域名，其余用 remotePort
+pub fn remote_display(c: &ProxyCfg) -> String {
+    let doms = c.domains.trim();
+    if !doms.is_empty() {
+        return doms.to_string();
+    }
+    let rp = c.remote_port.trim();
+    if rp.is_empty() {
+        String::new()
+    } else {
+        format!(":{rp}")
+    }
+}
+
+fn changed(old: String, new: String) -> Option<PendingField> {
+    (old != new).then_some(PendingField { old, new })
+}
+
+/// 已生效配置 vs 暂存配置。返回（按"生效侧名字"索引的标记，只在暂存里出现的新隧道）。
+///
+/// `renames` 是文件模式改名的记录（旧名→新名）：改名后两边名字对不上，
+/// 不记这张表就只能把「A 改成 B」看成「删了 A、又新建 B」。
+pub fn diff_pending(
+    eff: &[ProxyCfg],
+    staged: &[ProxyCfg],
+    renames: &HashMap<String, String>,
+) -> (HashMap<String, PendingMark>, Vec<ProxyCfg>) {
+    let mut marks: HashMap<String, PendingMark> = HashMap::new();
+    let mut matched: HashSet<String> = HashSet::new();
+    for e in eff {
+        let want = renames.get(&e.name).map(String::as_str).unwrap_or(&e.name);
+        match staged.iter().find(|s| s.name == want) {
+            None => {
+                marks.insert(
+                    e.name.clone(),
+                    PendingMark {
+                        removed: true,
+                        ..Default::default()
+                    },
+                );
+            }
+            Some(s) => {
+                matched.insert(s.name.clone());
+                let m = PendingMark {
+                    name: changed(e.name.clone(), s.name.clone()),
+                    local: changed(local_display(e), local_display(s)),
+                    remote: changed(remote_display(e), remote_display(s)),
+                    removed: false,
+                };
+                if !m.is_empty() {
+                    marks.insert(e.name.clone(), m);
+                }
+            }
+        }
+    }
+    let added = staged
+        .iter()
+        .filter(|s| !matched.contains(&s.name))
+        .cloned()
+        .collect();
+    (marks, added)
+}
+
+/// 记下一次改名：`original` 可能本身已经是上一次待生效改名的结果，要顺着链条改回同一个键
+pub fn note_rename(renames: &mut HashMap<String, String>, original: &str, new: &str) {
+    let key = renames
+        .iter()
+        .find(|(_, v)| v.as_str() == original)
+        .map(|(k, _)| k.clone())
+        .unwrap_or_else(|| original.to_string());
+    if key == new {
+        renames.remove(&key);
+    } else {
+        renames.insert(key, new.to_string());
+    }
+}
+
 pub fn read_config_file(t: &Target) -> Result<String> {
     std::fs::read_to_string(&t.config_path)
         .with_context(|| l10n::t(
@@ -2947,18 +3263,37 @@ pub fn reveal_in_finder(path: &str) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let st = std::process::Command::new("open")
-            .arg("-R")
-            .arg(p)
-            .status()
-            .context(l10n::t("调用 open 失败", "Failed to run open"))?;
-        if !st.success() {
-            bail!(l10n::t(
-                "Finder 没能定位到该文件",
-                "Finder could not reveal the file"
-            ));
+        #[cfg(target_os = "macos")]
+        {
+            let st = std::process::Command::new("open")
+                .arg("-R")
+                .arg(p)
+                .status()
+                .context(l10n::t("调用 open 失败", "Failed to run open"))?;
+            if !st.success() {
+                bail!(l10n::t(
+                    "Finder 没能定位到该文件",
+                    "Finder could not reveal the file"
+                ));
+            }
+            Ok(())
         }
-        Ok(())
+        // Linux 没有统一的"选中某个文件"接口，退一步打开它所在的目录
+        #[cfg(not(target_os = "macos"))]
+        {
+            let dir = Path::new(p).parent().unwrap_or(Path::new(p));
+            let st = std::process::Command::new("xdg-open")
+                .arg(dir)
+                .status()
+                .context(l10n::t("调用 xdg-open 失败", "Failed to run xdg-open"))?;
+            if !st.success() {
+                bail!(l10n::t(
+                    format!("文件管理器没能打开 {}", dir.display()),
+                    format!("The file manager could not open {}", dir.display())
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -3903,9 +4238,14 @@ maxFailed = 3
         let v = bin_version(&st.bin).unwrap_or_default();
         println!("bin={} version={} etime={} upgraded={}", st.bin, v, st.etime, binary_upgraded(&st.bin, &st.etime));
         assert!(v.chars().next().unwrap_or('x').is_ascii_digit(), "版本号应以数字开头");
-        let (latest, url) = latest_frp_release().unwrap();
+        let (latest, url) = latest_frp_release("").unwrap();
         println!("github latest={latest} url={url} 可更新={}", !version_at_least(&v, &latest));
         assert!(latest.chars().next().unwrap_or('x').is_ascii_digit());
+        // 镜子那条链路单独印一次：加了前缀能不能拿到同一个版本号
+        match latest_frp_release("https://github.ofind.cn") {
+            Ok((m, _)) => println!("mirror latest={m} 与直连一致={}", m == latest),
+            Err(e) => println!("mirror 失败：{e}"),
+        }
         assert!(url.starts_with("https://"));
         // 同一个路径第二次读要走缓存，不再 fork 进程
         assert_eq!(bin_version(&st.bin).as_deref(), Some(v.as_str()));
@@ -3983,5 +4323,114 @@ maxFailed = 3
         assert!(win_config_from_cmdline(r#"frpc.exe"#, None).is_none());
         assert_eq!(fmt_etime_secs(3741), "01:02:21");
         assert_eq!(fmt_etime_secs(90061), "1-01:01:01");
+    }
+
+    fn pc(name: &str, ip: &str, port: &str, rp: &str, doms: &str) -> ProxyCfg {
+        ProxyCfg {
+            name: name.into(),
+            ptype: "tcp".into(),
+            local_ip: ip.into(),
+            local_port: port.into(),
+            remote_port: rp.into(),
+            domains: doms.into(),
+            adv: Default::default(),
+        }
+    }
+
+    #[test]
+    fn mirror_prefix_is_joined_not_replaced() {
+        // 前缀没写末尾斜杠要补上；写了不能重复
+        assert_eq!(mirror_url("https://ghp.example.com", "https://github.com/a/b").unwrap(), "https://ghp.example.com/https://github.com/a/b");
+        assert_eq!(mirror_url("https://ghp.example.com/", "https://github.com/a/b").unwrap(), "https://ghp.example.com/https://github.com/a/b");
+        // 没设镜子＝原地址；非 http(s) 的目标不该被拼进前缀
+        assert!(mirror_url("   ", "https://github.com/a/b").is_none());
+        assert!(mirror_url("https://ghp.example.com/", "mailto:x@y.z").is_none());
+        assert!(check_mirror_prefix("").is_ok());
+        assert!(check_mirror_prefix("https://ghp.example.com/").is_ok());
+        assert!(check_mirror_prefix("ghp.example.com").is_err());
+    }
+
+    #[test]
+    fn redirect_location_resolves_back_to_the_same_host() {
+        // 镜子的写法：相对地址里嵌着完整 URL，拼回去必须仍是镜子（否则这一跳又回 GitHub）
+        assert_eq!(
+            resolve_location(
+                "https://ghp.example.com/https://github.com/fatedier/frp/releases/latest",
+                "/https://github.com/fatedier/frp/releases/tag/v0.71.0"
+            ),
+            "https://ghp.example.com/https://github.com/fatedier/frp/releases/tag/v0.71.0"
+        );
+        // GitHub 自己的相对跳转
+        assert_eq!(
+            resolve_location("https://github.com/fatedier/frp/releases/latest", "/fatedier/frp/releases/tag/v0.71.0"),
+            "https://github.com/fatedier/frp/releases/tag/v0.71.0"
+        );
+        // 绝对跳转原样用
+        assert_eq!(
+            resolve_location("https://ghp.example.com/x", "https://cdn.example.com/a"),
+            "https://cdn.example.com/a"
+        );
+    }
+
+    #[test]
+    fn mapped_address_becomes_a_browsable_url() {
+        assert_eq!(address_url("a.example.com:8080").unwrap(), "http://a.example.com:8080");
+        assert_eq!(address_url(" https://a.example.com ").unwrap(), "https://a.example.com");
+        // 只有端口、空行、以及"+3 个域名"这种折叠行都点不开
+        assert!(address_url(":9205").is_none());
+        assert!(address_url("").is_none());
+        assert!(address_url("+3 个域名").is_none());
+    }
+
+    #[test]
+    fn diff_pending_marks_only_what_is_not_effective_yet() {
+        let eff = vec![pc("web", "127.0.0.1", "9091", "9100", ""), pc("ssh", "127.0.0.1", "22", "2200", "")];
+        let renames = HashMap::new();
+
+        // 一模一样 → 一个标记都没有，也不会冒出"待生效"行
+        let (marks, added) = diff_pending(&eff, &eff, &renames);
+        assert!(marks.is_empty() && added.is_empty());
+
+        // 改端口 + 删一条 + 新增一条
+        let staged = vec![pc("web", "127.0.0.1", "9091", "9101", ""), pc("new", "127.0.0.1", "3000", "3000", "")];
+        let (marks, added) = diff_pending(&eff, &staged, &renames);
+        assert_eq!(marks["web"].remote.as_ref().unwrap().old, ":9100");
+        assert_eq!(marks["web"].remote.as_ref().unwrap().new, ":9101");
+        assert!(marks["web"].local.is_none() && marks["web"].name.is_none());
+        assert!(marks["ssh"].removed);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].name, "new");
+
+        // 改名：没有那张表就会被读成"删了 web、又新建了 web2"
+        let staged = vec![pc("web2", "127.0.0.1", "9091", "9100", ""), pc("ssh", "127.0.0.1", "22", "2200", "")];
+        let mut renames = HashMap::new();
+        renames.insert("web".to_string(), "web2".to_string());
+        let (marks, added) = diff_pending(&eff, &staged, &renames);
+        assert_eq!(marks["web"].name.as_ref().unwrap().new, "web2");
+        assert!(!marks["web"].removed);
+        assert!(added.is_empty(), "改名后的条目不该被当成新建: {added:?}");
+
+        // http 类型比的是域名，remotePort 空也不算变化
+        let eff = vec![pc("site", "127.0.0.1", "3000", "", "a.example.com")];
+        let staged = vec![pc("site", "127.0.0.1", "3000", "", "a.example.com, b.example.com")];
+        let (marks, _) = diff_pending(&eff, &staged, &HashMap::new());
+        assert_eq!(marks["site"].remote.as_ref().unwrap().new, "a.example.com, b.example.com");
+    }
+
+    #[test]
+    fn rename_chain_keeps_one_pending_entry() {
+        // A→B，再把 B 改成 C：待生效的那条隧道仍是 A，不能变成两条
+        let mut r = HashMap::new();
+        note_rename(&mut r, "a", "b");
+        assert_eq!(r.get("a").map(String::as_str), Some("b"));
+        note_rename(&mut r, "b", "c");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.get("a").map(String::as_str), Some("c"));
+        // 改回原名 → 这条待生效记录该整个消失
+        note_rename(&mut r, "c", "a");
+        assert!(r.is_empty(), "改回原名后还剩 {r:?}");
+        // 没改名的普通编辑不留记录
+        note_rename(&mut r, "x", "x");
+        assert!(r.is_empty());
     }
 }

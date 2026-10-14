@@ -1,6 +1,6 @@
 [package]
 name = "frp-client-tauri"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "FRP Client - a native desktop GUI for managing local and remote frpc instances"
 authors = ["zhuzhuyule"]
@@ -13,6 +13,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml_edit = "0.22"
 ureq = { version = "2.10", features = ["json"] }
+# updater 的端点类型就是 url::Url；镜子前缀要在运行时拼进去
+url = "2"
 base64 = "0.22"
 anyhow = "1"
 
